@@ -1,0 +1,1202 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1G
+ * JRC GLOBAL SURFACE WATER — MONTHLY HISTORY
+ * FINAL RESEARCH EXPORT
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Study period:
+ * 2000-01 to 2021-12
+ *
+ * Dataset:
+ * JRC/GSW1_4/MonthlyHistory
+ *
+ * Native spatial resolution:
+ * 30 m
+ *
+ * Native temporal resolution:
+ * Monthly
+ *
+ * WATER CLASSES:
+ *
+ * 0 = No data
+ * 1 = Not water
+ * 2 = Water
+ *
+ * CRITICAL SCIENTIFIC RULES:
+ *
+ * 1. No observation != zero water.
+ * 2. If no valid observation exists:
+ *       water area = null
+ *       water fraction = null
+ * 3. If valid observations exist but no water is detected:
+ *       water area = 0
+ *       water fraction = 0
+ * 4. Low spatial coverage is FLAGGED, not automatically deleted.
+ * 5. JRC surface-water area is NOT surface-water storage volume.
+ * 6. JRC km² cannot be directly subtracted from GRACE TWSA cm.
+ *
+ * FINAL OUTPUT:
+ * AEZ26_JRC_SurfaceWater_Monthly_QC_2000_2021.csv
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+
+var START_DATE =
+  '2000-01-01';
+
+
+/*
+ * filterDate end is exclusive.
+ *
+ * JRC v1.4 MonthlyHistory ends in December 2021.
+ */
+
+var END_DATE =
+  '2022-01-01';
+
+
+var SCALE_JRC =
+  30;
+
+
+/*
+ * QC threshold.
+ *
+ * This does NOT remove observations.
+ *
+ * It only marks months where less than 70%
+ * of the AEZ raster area has valid observations.
+ */
+
+var MIN_VALID_FRACTION =
+  0.70;
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+
+var studyArea =
+  studyAreaFC.geometry();
+
+
+var vectorAreaKm2 =
+  studyArea
+    .area({
+      maxError: 1
+    })
+    .divide(
+      1e6
+    );
+
+
+print('=====================================================');
+print('PHASE 1G — JRC MONTHLY SURFACE WATER');
+print('=====================================================');
+
+
+print(
+  'Study Area:',
+  studyAreaFC
+);
+
+
+print(
+  'Feature count:',
+  studyAreaFC.size()
+);
+
+
+print(
+  'AEZ-26 vector area (km²):',
+  vectorAreaKm2
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  10
+);
+
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. LOAD JRC MONTHLY HISTORY
+// =====================================================================
+
+var jrc =
+  ee.ImageCollection(
+    'JRC/GSW1_4/MonthlyHistory'
+  )
+    .filterDate(
+      START_DATE,
+      END_DATE
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+print(
+  'JRC monthly source count:',
+  jrc.size()
+);
+
+
+print(
+  'First JRC source image:',
+  jrc.first()
+);
+
+
+print(
+  'Last JRC source image:',
+  jrc
+    .sort(
+      'system:time_start',
+      false
+    )
+    .first()
+);
+
+
+/*
+ * Expected:
+ *
+ * 22 years × 12 months
+ *
+ * = 264 images.
+ */
+
+
+// =====================================================================
+// 3. PROCESS ONE MONTH
+// =====================================================================
+
+function processJRC(
+  image
+) {
+
+
+  // ===================================================================
+  // 3A. NATIVE TIME / TRACEABILITY
+  // ===================================================================
+
+  var nativeDate =
+    image.date();
+
+
+  var nativeIndex =
+    image.get(
+      'system:index'
+    );
+
+
+  var year =
+    ee.Number(
+      nativeDate.get(
+        'year'
+      )
+    );
+
+
+  var month =
+    ee.Number(
+      nativeDate.get(
+        'month'
+      )
+    );
+
+
+  // ===================================================================
+  // 3B. WATER CLASSIFICATION
+  // ===================================================================
+
+  var waterClass =
+    image.select(
+      'water'
+    );
+
+
+  /*
+   * JRC classes:
+   *
+   * 0 = no data
+   * 1 = valid observation, not water
+   * 2 = valid observation, water
+   */
+
+
+  var validObservationMask =
+    waterClass.gt(0);
+
+
+  var waterMask =
+    waterClass.eq(2);
+
+
+  var nonWaterMask =
+    waterClass.eq(1);
+
+
+  // ===================================================================
+  // 3C. PIXEL AREA
+  // ===================================================================
+
+  /*
+   * ee.Image.pixelArea()
+   *
+   * area is initially m².
+   *
+   * Divide by 1,000,000:
+   *
+   * -> km²
+   */
+
+
+  var pixelAreaKm2 =
+    ee.Image
+      .pixelArea()
+      .divide(
+        1e6
+      );
+
+
+  // ===================================================================
+  // 3D. REFERENCE RASTER AREA
+  // ===================================================================
+
+  /*
+   * We use the JRC image mask to establish
+   * the rasterized AEZ reference area.
+   *
+   * This is deliberately distinguished from
+   * the geodesic vector area.
+   */
+
+
+  var referenceRasterAreaDict =
+    pixelAreaKm2
+      .updateMask(
+        waterClass.mask()
+      )
+      .reduceRegion({
+
+        reducer:
+          ee.Reducer.sum(),
+
+        geometry:
+          studyArea,
+
+        scale:
+          SCALE_JRC,
+
+        maxPixels:
+          1e9,
+
+        tileScale:
+          4
+
+      });
+
+
+  var referenceRasterAreaKm2 =
+    ee.Number(
+      referenceRasterAreaDict.get(
+        'area',
+        0
+      )
+    );
+
+
+  // ===================================================================
+  // 3E. VALID OBSERVED AREA
+  // ===================================================================
+
+  /*
+   * Only class 1 and class 2 are valid observations.
+   *
+   * Class 0 is NO DATA.
+   */
+
+
+  var validAreaDict =
+    pixelAreaKm2
+      .updateMask(
+        validObservationMask
+      )
+      .reduceRegion({
+
+        reducer:
+          ee.Reducer.sum(),
+
+        geometry:
+          studyArea,
+
+        scale:
+          SCALE_JRC,
+
+        maxPixels:
+          1e9,
+
+        tileScale:
+          4
+
+      });
+
+
+  /*
+   * If no valid pixels exist,
+   * valid observed area is genuinely 0 km².
+   *
+   * This is QC coverage,
+   * not water area.
+   */
+
+
+  var validAreaKm2 =
+    ee.Number(
+      validAreaDict.get(
+        'area',
+        0
+      )
+    );
+
+
+  // ===================================================================
+  // 3F. OBSERVED WATER AREA
+  // ===================================================================
+
+  var waterAreaDict =
+    pixelAreaKm2
+      .updateMask(
+        waterMask
+      )
+      .reduceRegion({
+
+        reducer:
+          ee.Reducer.sum(),
+
+        geometry:
+          studyArea,
+
+        scale:
+          SCALE_JRC,
+
+        maxPixels:
+          1e9,
+
+        tileScale:
+          4
+
+      });
+
+
+  /*
+   * If VALID observations exist but no water pixel exists,
+   *
+   * reduceRegion can return null.
+   *
+   * In that situation water area should genuinely be 0.
+   */
+
+
+  var observedWaterAreaKm2 =
+    ee.Number(
+      waterAreaDict.get(
+        'area',
+        0
+      )
+    );
+
+
+  // ===================================================================
+  // 3G. NON-WATER OBSERVED AREA
+  // ===================================================================
+
+  var nonWaterAreaDict =
+    pixelAreaKm2
+      .updateMask(
+        nonWaterMask
+      )
+      .reduceRegion({
+
+        reducer:
+          ee.Reducer.sum(),
+
+        geometry:
+          studyArea,
+
+        scale:
+          SCALE_JRC,
+
+        maxPixels:
+          1e9,
+
+        tileScale:
+          4
+
+      });
+
+
+  var observedNonWaterAreaKm2 =
+    ee.Number(
+      nonWaterAreaDict.get(
+        'area',
+        0
+      )
+    );
+
+
+  // ===================================================================
+  // 3H. VALID OBSERVATION FRACTION
+  // ===================================================================
+
+  /*
+   * Fraction of rasterized AEZ area
+   * with valid water/non-water classification.
+   */
+
+
+  var validObservationFraction =
+    ee.Algorithms.If(
+
+      referenceRasterAreaKm2.gt(0),
+
+      validAreaKm2.divide(
+        referenceRasterAreaKm2
+      ),
+
+      null
+
+    );
+
+
+  // ===================================================================
+  // 3I. FINAL WATER AREA
+  // ===================================================================
+
+  /*
+   * SCIENTIFIC DISTINCTION:
+   *
+   * CASE A:
+   *
+   * validArea > 0,
+   * no water detected
+   *
+   * -> water area = 0
+   *
+   *
+   * CASE B:
+   *
+   * validArea = 0
+   *
+   * -> water area UNKNOWN
+   * -> null
+   */
+
+
+  var finalWaterAreaKm2 =
+    ee.Algorithms.If(
+
+      validAreaKm2.gt(0),
+
+      observedWaterAreaKm2,
+
+      null
+
+    );
+
+
+  // ===================================================================
+  // 3J. WATER FRACTION OF OBSERVED AREA
+  // ===================================================================
+
+  var waterFractionOfValidArea =
+    ee.Algorithms.If(
+
+      validAreaKm2.gt(0),
+
+      observedWaterAreaKm2.divide(
+        validAreaKm2
+      ),
+
+      null
+
+    );
+
+
+  // ===================================================================
+  // 3K. NON-WATER FRACTION
+  // ===================================================================
+
+  var nonWaterFractionOfValidArea =
+    ee.Algorithms.If(
+
+      validAreaKm2.gt(0),
+
+      observedNonWaterAreaKm2.divide(
+        validAreaKm2
+      ),
+
+      null
+
+    );
+
+
+  // ===================================================================
+  // 3L. QC FLAGS
+  // ===================================================================
+
+  var noValidObservationFlag =
+    ee.Number(
+      ee.Algorithms.If(
+
+        validAreaKm2.gt(0),
+
+        0,
+
+        1
+
+      )
+    );
+
+
+  var validFractionForFlag =
+    ee.Number(
+      ee.Algorithms.If(
+
+        ee.Algorithms.IsEqual(
+          validObservationFraction,
+          null
+        ),
+
+        0,
+
+        validObservationFraction
+
+      )
+    );
+
+
+  var lowCoverageFlag =
+    ee.Number(
+      ee.Algorithms.If(
+
+        validFractionForFlag.lt(
+          MIN_VALID_FRACTION
+        ),
+
+        1,
+
+        0
+
+      )
+    );
+
+
+  /*
+   * This indicates whether WATER was detected
+   * among valid observations.
+   *
+   * It is NOT the same as data availability.
+   */
+
+
+  var waterDetectedFlag =
+    ee.Number(
+      ee.Algorithms.If(
+
+        validAreaKm2.gt(0),
+
+        ee.Algorithms.If(
+          observedWaterAreaKm2.gt(0),
+          1,
+          0
+        ),
+
+        0
+
+      )
+    );
+
+
+  // ===================================================================
+  // 3M. INTERNAL AREA-BALANCE ERROR
+  // ===================================================================
+
+  /*
+   * For valid observed pixels:
+   *
+   * water area
+   * +
+   * non-water area
+   *
+   * should approximately equal
+   *
+   * valid observed area.
+   *
+   * Tiny differences can arise from
+   * floating-point / projection calculations.
+   */
+
+
+  var observedAreaBalanceErrorKm2 =
+    observedWaterAreaKm2
+      .add(
+        observedNonWaterAreaKm2
+      )
+      .subtract(
+        validAreaKm2
+      )
+      .abs();
+
+
+  // ===================================================================
+  // 3N. ONE MONTH -> ONE CSV ROW
+  // ===================================================================
+
+  return ee.Feature(
+    null,
+    {
+
+      // ---------------------------------------------------------------
+      // Native timing
+      // ---------------------------------------------------------------
+
+      native_system_index:
+        nativeIndex,
+
+      date:
+        nativeDate.format(
+          'YYYY-MM-dd'
+        ),
+
+      year:
+        year,
+
+      month:
+        month,
+
+
+      // ---------------------------------------------------------------
+      // Reference areas
+      // ---------------------------------------------------------------
+
+      AEZ_vector_area_km2:
+        vectorAreaKm2,
+
+      JRC_reference_raster_area_km2:
+        referenceRasterAreaKm2,
+
+
+      // ---------------------------------------------------------------
+      // Observation coverage
+      // ---------------------------------------------------------------
+
+      valid_observed_area_km2:
+        validAreaKm2,
+
+      valid_observation_fraction:
+        validObservationFraction,
+
+
+      // ---------------------------------------------------------------
+      // Surface water
+      // ---------------------------------------------------------------
+
+      water_area_km2:
+        finalWaterAreaKm2,
+
+      water_fraction_of_valid_area:
+        waterFractionOfValidArea,
+
+
+      // ---------------------------------------------------------------
+      // Non-water diagnostic
+      // ---------------------------------------------------------------
+
+      nonwater_observed_area_km2:
+        observedNonWaterAreaKm2,
+
+      nonwater_fraction_of_valid_area:
+        nonWaterFractionOfValidArea,
+
+
+      // ---------------------------------------------------------------
+      // QC
+      // ---------------------------------------------------------------
+
+      no_valid_observation_flag:
+        noValidObservationFlag,
+
+      low_coverage_flag:
+        lowCoverageFlag,
+
+      water_detected_flag:
+        waterDetectedFlag,
+
+      observed_area_balance_error_km2:
+        observedAreaBalanceErrorKm2
+
+    }
+  );
+
+}
+
+
+// =====================================================================
+// 4. BUILD FINAL MONTHLY TABLE
+// =====================================================================
+
+var jrcFC =
+  ee.FeatureCollection(
+
+    jrc.map(
+      processJRC
+    )
+
+  );
+
+
+print('=====================================================');
+print('FINAL JRC TABLE');
+print('=====================================================');
+
+
+print(
+  'Final JRC row count:',
+  jrcFC.size()
+);
+
+
+print(
+  'First output Feature:',
+  jrcFC.first()
+);
+
+
+// =====================================================================
+// 5. JULY 2020 EXPLICIT VALIDATION
+// =====================================================================
+
+var validation =
+  ee.Feature(
+
+    jrcFC
+      .filter(
+        ee.Filter.eq(
+          'native_system_index',
+          '2020_07'
+        )
+      )
+      .first()
+
+  );
+
+
+print('=====================================================');
+print('2020-07 EXPLICIT VALIDATION');
+print('=====================================================');
+
+
+print(
+  'VALIDATION date:',
+  validation.get(
+    'date'
+  )
+);
+
+
+print(
+  'VALIDATION JRC reference raster area (km²):',
+  validation.get(
+    'JRC_reference_raster_area_km2'
+  )
+);
+
+
+print(
+  'VALIDATION valid observed area (km²):',
+  validation.get(
+    'valid_observed_area_km2'
+  )
+);
+
+
+print(
+  'VALIDATION valid observation fraction:',
+  validation.get(
+    'valid_observation_fraction'
+  )
+);
+
+
+print(
+  'VALIDATION water area (km²):',
+  validation.get(
+    'water_area_km2'
+  )
+);
+
+
+print(
+  'VALIDATION water fraction of valid area:',
+  validation.get(
+    'water_fraction_of_valid_area'
+  )
+);
+
+
+print(
+  'VALIDATION non-water area (km²):',
+  validation.get(
+    'nonwater_observed_area_km2'
+  )
+);
+
+
+print(
+  'VALIDATION low coverage flag:',
+  validation.get(
+    'low_coverage_flag'
+  )
+);
+
+
+print(
+  'VALIDATION no-valid-observation flag:',
+  validation.get(
+    'no_valid_observation_flag'
+  )
+);
+
+
+print(
+  'VALIDATION observed-area balance error (km²):',
+  validation.get(
+    'observed_area_balance_error_km2'
+  )
+);
+
+
+/*
+ * Earlier diagnostic approximately:
+ *
+ * reference raster area ≈ 1542 km²
+ *
+ * valid observed area ≈ 8.72 km²
+ *
+ * valid fraction ≈ 0.00566
+ *
+ * water area ≈ 4.10 km²
+ *
+ * low coverage flag = 1
+ */
+
+
+// =====================================================================
+// 6. COLLECTION-LEVEL QC
+// =====================================================================
+
+print('=====================================================');
+print('JRC COLLECTION QC');
+print('=====================================================');
+
+
+print(
+  'Minimum valid observation fraction:',
+  jrcFC.aggregate_min(
+    'valid_observation_fraction'
+  )
+);
+
+
+print(
+  'Mean valid observation fraction:',
+  jrcFC.aggregate_mean(
+    'valid_observation_fraction'
+  )
+);
+
+
+print(
+  'Maximum valid observation fraction:',
+  jrcFC.aggregate_max(
+    'valid_observation_fraction'
+  )
+);
+
+
+var lowCoverageMonths =
+  jrcFC.filter(
+    ee.Filter.eq(
+      'low_coverage_flag',
+      1
+    )
+  );
+
+
+print(
+  'Number of low-coverage months (< 70%):',
+  lowCoverageMonths.size()
+);
+
+
+var noValidMonths =
+  jrcFC.filter(
+    ee.Filter.eq(
+      'no_valid_observation_flag',
+      1
+    )
+  );
+
+
+print(
+  'Number of months with no valid observations:',
+  noValidMonths.size()
+);
+
+
+print(
+  'Maximum internal observed-area balance error (km²):',
+  jrcFC.aggregate_max(
+    'observed_area_balance_error_km2'
+  )
+);
+
+
+// =====================================================================
+// 7. FIRST / LAST MONTH CHECK
+// =====================================================================
+
+var firstFeature =
+  ee.Feature(
+    jrcFC
+      .sort(
+        'date',
+        true
+      )
+      .first()
+  );
+
+
+var lastFeature =
+  ee.Feature(
+    jrcFC
+      .sort(
+        'date',
+        false
+      )
+      .first()
+  );
+
+
+print('=====================================================');
+print('FIRST / LAST MONTH');
+print('=====================================================');
+
+
+print(
+  'First output date:',
+  firstFeature.get(
+    'date'
+  )
+);
+
+
+print(
+  'Last output date:',
+  lastFeature.get(
+    'date'
+  )
+);
+
+
+// =====================================================================
+// 8. MAP VISUALIZATION
+// =====================================================================
+
+/*
+ * Earlier class visualization painted
+ * no-data areas gray and covered other map layers.
+ *
+ * Here we display ONLY detected water pixels.
+ */
+
+
+var july2020Image =
+  ee.Image(
+    jrc
+      .filterDate(
+        '2020-07-01',
+        '2020-08-01'
+      )
+      .first()
+  );
+
+
+var july2020WaterOnly =
+  july2020Image
+    .select(
+      'water'
+    )
+    .eq(2)
+    .selfMask();
+
+
+Map.addLayer(
+
+  july2020WaterOnly,
+
+  {
+    min: 1,
+    max: 1,
+    palette: [
+      'blue'
+    ]
+  },
+
+  'JRC detected surface water — July 2020',
+
+  false
+
+);
+
+
+// =====================================================================
+// 9. FINAL EXPORT
+// =====================================================================
+
+Export.table.toDrive({
+
+  collection:
+    jrcFC,
+
+  description:
+    'AEZ26_JRC_SurfaceWater_Monthly_QC_2000_2021',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_JRC_SurfaceWater_Monthly_QC_2000_2021',
+
+  fileFormat:
+    'CSV',
+
+  selectors: [
+
+    // Native time / traceability
+    'native_system_index',
+    'date',
+    'year',
+    'month',
+
+    // Reference areas
+    'AEZ_vector_area_km2',
+    'JRC_reference_raster_area_km2',
+
+    // Valid observation coverage
+    'valid_observed_area_km2',
+    'valid_observation_fraction',
+
+    // Surface water
+    'water_area_km2',
+    'water_fraction_of_valid_area',
+
+    // Non-water diagnostic
+    'nonwater_observed_area_km2',
+    'nonwater_fraction_of_valid_area',
+
+    // QC flags
+    'no_valid_observation_flag',
+    'low_coverage_flag',
+    'water_detected_flag',
+
+    // Internal QC
+    'observed_area_balance_error_km2'
+
+  ]
+
+});
+
+
+// =====================================================================
+// 10. FINAL MESSAGE
+// =====================================================================
+
+print('=====================================================');
+print('PHASE 1G JRC SCRIPT READY');
+print('=====================================================');
+
+
+print(
+  'Expected output rows:',
+  264
+);
+
+
+print(
+  'Expected period:',
+  '2000-01 through 2021-12'
+);
+
+
+print(
+  'No-data pixels are NOT treated as zero-water observations.'
+);
+
+
+print(
+  'Months with low valid coverage are retained and flagged.'
+);
+
+
+print(
+  'Water area is reported in km² and is NOT water-storage volume.'
+);
+
+
+print(
+  'Do NOT subtract JRC km² directly from GRACE TWSA cm.'
+);
+
+
+print(
+  'If there is no red error, RUN the single JRC export task.'
+);
+
+
+print('=====================================================');

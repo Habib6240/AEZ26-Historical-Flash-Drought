@@ -1,0 +1,1441 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1D
+ * MOD16A2GF ET / PET — FINAL RESEARCH EXPORT v2
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Period:
+ * 2000-01-01 to 2025-12-31
+ *
+ * Dataset:
+ * MODIS/061/MOD16A2GF
+ *
+ * FINAL METHODOLOGY:
+ *
+ * - Preserve native MOD16 composite timing.
+ * - No daily interpolation in GEE.
+ * - Primary series = valid gap-filled MOD16A2GF ET/PET.
+ * - Strict-QA series = sensitivity / QC track only.
+ * - Regional ET/PET = regional mean ET / regional mean PET.
+ * - Retain both mm/composite and normalized mm/day.
+ * - Handle final annual 5/6-day composite explicitly.
+ * - Missing strict-QA data remain null.
+ *
+ * FINAL OUTPUT:
+ * AEZ26_MODIS_ET_PET_QC_2000_2025.csv
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+var START_DATE =
+  '2000-01-01';
+
+var END_DATE =
+  '2026-01-01';  // exclusive
+
+var SCALE_MOD16 =
+  500;
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+var studyArea =
+  studyAreaFC.geometry();
+
+var studyAreaKm2 =
+  studyArea
+    .area({
+      maxError: 1
+    })
+    .divide(1e6);
+
+
+print('=====================================================');
+print('PHASE 1D — MOD16A2GF ET/PET FINAL v2');
+print('=====================================================');
+
+print(
+  'Study Area:',
+  studyAreaFC
+);
+
+print(
+  'Feature count:',
+  studyAreaFC.size()
+);
+
+print(
+  'AEZ-26 vector area (km²):',
+  studyAreaKm2
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  10
+);
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. LOAD MOD16A2GF
+// =====================================================================
+
+var mod16 =
+  ee.ImageCollection(
+    'MODIS/061/MOD16A2GF'
+  )
+    .filterDate(
+      START_DATE,
+      END_DATE
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+print(
+  'MOD16A2GF composite count:',
+  mod16.size()
+);
+
+print(
+  'First MOD16 source image:',
+  mod16.first()
+);
+
+print(
+  'Last MOD16 source image:',
+  mod16
+    .sort(
+      'system:time_start',
+      false
+    )
+    .first()
+);
+
+
+// =====================================================================
+// 3. QA BIT HELPER
+// =====================================================================
+
+function extractBits(
+  image,
+  startBit,
+  endBit
+) {
+
+  var bitMask = 0;
+
+  for (
+    var i = startBit;
+    i <= endBit;
+    i++
+  ) {
+
+    bitMask += Math.pow(
+      2,
+      i
+    );
+
+  }
+
+  return image
+    .bitwiseAnd(
+      bitMask
+    )
+    .rightShift(
+      startBit
+    );
+}
+
+
+// =====================================================================
+// 4. COVERAGE FRACTION HELPER
+// =====================================================================
+
+function fractionOverRegion(
+  conditionImage
+) {
+
+  var binary =
+    conditionImage
+      .unmask(0)
+      .rename(
+        'fraction'
+      );
+
+  var result =
+    binary.reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_MOD16,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        2
+
+    });
+
+  return ee.Number(
+    result.get(
+      'fraction'
+    )
+  );
+}
+
+
+// =====================================================================
+// 5. SAFE RATIO HELPER
+// =====================================================================
+
+function safeRatio(
+  numeratorValue,
+  denominatorValue
+) {
+
+  return ee.Algorithms.If(
+
+    ee.Algorithms.IsEqual(
+      denominatorValue,
+      null
+    ),
+
+    null,
+
+    ee.Algorithms.If(
+
+      ee.Algorithms.IsEqual(
+        numeratorValue,
+        null
+      ),
+
+      null,
+
+      ee.Algorithms.If(
+
+        ee.Number(
+          denominatorValue
+        ).gt(0),
+
+        ee.Number(
+          numeratorValue
+        ).divide(
+          ee.Number(
+            denominatorValue
+          )
+        ),
+
+        null
+
+      )
+
+    )
+
+  );
+}
+
+
+// =====================================================================
+// 6. SAFE PER-DAY NORMALIZATION
+// =====================================================================
+
+function safePerDay(
+  value,
+  numberOfDays
+) {
+
+  return ee.Algorithms.If(
+
+    ee.Algorithms.IsEqual(
+      value,
+      null
+    ),
+
+    null,
+
+    ee.Number(
+      value
+    ).divide(
+      numberOfDays
+    )
+
+  );
+}
+
+
+// =====================================================================
+// 7. PROCESS EACH MOD16 COMPOSITE
+// =====================================================================
+
+function processMOD16(
+  image
+) {
+
+
+  // ===================================================================
+  // 7A. NATIVE COMPOSITE TIMING
+  // ===================================================================
+
+  var compositeStart =
+    image.date();
+
+  var year =
+    ee.Number(
+      compositeStart.get(
+        'year'
+      )
+    );
+
+  var nextYear =
+    ee.Date.fromYMD(
+      year.add(1),
+      1,
+      1
+    );
+
+  var daysRemainingInYear =
+    nextYear.difference(
+      compositeStart,
+      'day'
+    );
+
+  /*
+   * Most composites = 8 days.
+   * Final annual composite = 5 or 6 days.
+   */
+
+  var compositeDays =
+    ee.Number(
+      daysRemainingInYear
+    ).min(
+      8
+    );
+
+  var compositeEnd =
+    compositeStart.advance(
+      compositeDays.subtract(1),
+      'day'
+    );
+
+
+  // ===================================================================
+  // 7B. SOURCE BANDS
+  // ===================================================================
+
+  var rawET =
+    image.select(
+      'ET'
+    );
+
+  var rawPET =
+    image.select(
+      'PET'
+    );
+
+  var qc =
+    image.select(
+      'ET_QC'
+    );
+
+
+  // ===================================================================
+  // 7C. PRIMARY VALID MASK
+  // ===================================================================
+
+  /*
+   * Both ET and PET must exist.
+   *
+   * Additional valid stored-range protection:
+   * 0–32700
+   */
+
+  var sourceMask =
+    rawET
+      .mask()
+      .and(
+        rawPET.mask()
+      );
+
+  var rangeMask =
+    rawET
+      .gte(0)
+      .and(
+        rawET.lte(32700)
+      )
+      .and(
+        rawPET.gte(0)
+      )
+      .and(
+        rawPET.lte(32700)
+      );
+
+  var primaryMask =
+    sourceMask.and(
+      rangeMask
+    );
+
+
+  // ===================================================================
+  // 7D. SCALE ET / PET
+  // ===================================================================
+
+  /*
+   * Scale factor = 0.1
+   *
+   * kg/m² water ≈ mm water depth.
+   */
+
+  var ETscaled =
+    rawET
+      .multiply(0.1)
+      .rename(
+        'ET_mm'
+      );
+
+  var PETscaled =
+    rawPET
+      .multiply(0.1)
+      .rename(
+        'PET_mm'
+      );
+
+  var ETprimary =
+    ETscaled.updateMask(
+      primaryMask
+    );
+
+  var PETprimary =
+    PETscaled.updateMask(
+      primaryMask
+    );
+
+
+  // ===================================================================
+  // 7E. DECODE ET_QC
+  // ===================================================================
+
+  /*
+   * Bit 0:
+   * MODLAND QC
+   *
+   * 0 = good
+   * 1 = other quality
+   */
+
+  var modlandQC =
+    extractBits(
+      qc,
+      0,
+      0
+    );
+
+
+  /*
+   * Bits 3–4:
+   * Cloud state
+   *
+   * 0 = clear
+   * 1 = significant cloud
+   * 2 = mixed cloud
+   * 3 = undefined / assumed clear
+   */
+
+  var cloudState =
+    extractBits(
+      qc,
+      3,
+      4
+    );
+
+
+  /*
+   * Bits 5–7:
+   * SCF quality
+   *
+   * Strict sensitivity track keeps:
+   * SCF <= 1
+   */
+
+  var scfQC =
+    extractBits(
+      qc,
+      5,
+      7
+    );
+
+
+  // ===================================================================
+  // 7F. STRICT QA MASK
+  // ===================================================================
+
+  /*
+   * This is deliberately strict.
+   *
+   * It is NOT used as the primary regional ET/PET series.
+   */
+
+  var strictMask =
+    primaryMask
+
+      .and(
+        modlandQC.eq(0)
+      )
+
+      .and(
+        cloudState.eq(0)
+      )
+
+      .and(
+        scfQC.lte(1)
+      );
+
+
+  var ETstrict =
+    ETscaled.updateMask(
+      strictMask
+    );
+
+  var PETstrict =
+    PETscaled.updateMask(
+      strictMask
+    );
+
+
+  // ===================================================================
+  // 7G. PRIMARY REGIONAL MEANS
+  // ===================================================================
+
+  var primaryStats =
+    ee.Image.cat([
+
+      ETprimary,
+
+      PETprimary
+
+    ]).reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_MOD16,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        2
+
+    });
+
+
+  var ETprimaryValue =
+    primaryStats.get(
+      'ET_mm'
+    );
+
+  var PETprimaryValue =
+    primaryStats.get(
+      'PET_mm'
+    );
+
+
+  // ===================================================================
+  // 7H. STRICT QA REGIONAL MEANS
+  // ===================================================================
+
+  var strictStats =
+    ee.Image.cat([
+
+      ETstrict,
+
+      PETstrict
+
+    ]).reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_MOD16,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        2
+
+    });
+
+
+  var ETstrictValue =
+    strictStats.get(
+      'ET_mm'
+    );
+
+  var PETstrictValue =
+    strictStats.get(
+      'PET_mm'
+    );
+
+
+  // ===================================================================
+  // 7I. COVERAGE FRACTIONS
+  // ===================================================================
+
+  var primaryFraction =
+    fractionOverRegion(
+      primaryMask
+    );
+
+  var strictFraction =
+    fractionOverRegion(
+      strictMask
+    );
+
+  var MODLANDgoodFraction =
+    fractionOverRegion(
+
+      primaryMask.and(
+        modlandQC.eq(0)
+      )
+
+    );
+
+  var clearPixelFraction =
+    fractionOverRegion(
+
+      primaryMask.and(
+        cloudState.eq(0)
+      )
+
+    );
+
+  var SCFgoodFraction =
+    fractionOverRegion(
+
+      primaryMask.and(
+        scfQC.lte(1)
+      )
+
+    );
+
+
+  // ===================================================================
+  // 7J. ET/PET RATIOS
+  // ===================================================================
+
+  /*
+   * Regional ratio:
+   *
+   * mean regional ET
+   * ----------------
+   * mean regional PET
+   *
+   * NOT mean(pixel ET/PET).
+   */
+
+  var primaryRatio =
+    safeRatio(
+      ETprimaryValue,
+      PETprimaryValue
+    );
+
+  var strictRatio =
+    safeRatio(
+      ETstrictValue,
+      PETstrictValue
+    );
+
+
+  // ===================================================================
+  // 7K. NORMALIZED MM/DAY
+  // ===================================================================
+
+  /*
+   * This does NOT create daily MODIS observations.
+   *
+   * It simply normalizes each composite total
+   * by its actual number of days.
+   */
+
+  var ETprimaryPerDay =
+    safePerDay(
+      ETprimaryValue,
+      compositeDays
+    );
+
+  var PETprimaryPerDay =
+    safePerDay(
+      PETprimaryValue,
+      compositeDays
+    );
+
+  var ETstrictPerDay =
+    safePerDay(
+      ETstrictValue,
+      compositeDays
+    );
+
+  var PETstrictPerDay =
+    safePerDay(
+      PETstrictValue,
+      compositeDays
+    );
+
+
+  // ===================================================================
+  // 7L. AVAILABILITY FLAGS
+  // ===================================================================
+
+  /*
+   * Use explicit numeric 0 / 1.
+   *
+   * This avoids Boolean display/filter ambiguity
+   * in Earth Engine Console.
+   */
+
+  var primaryAvailableFlag =
+    ee.Number(
+      ee.Algorithms.If(
+        primaryFraction.gt(0),
+        1,
+        0
+      )
+    );
+
+  var strictAvailableFlag =
+    ee.Number(
+      ee.Algorithms.If(
+        strictFraction.gt(0),
+        1,
+        0
+      )
+    );
+
+
+  // ===================================================================
+  // 7M. ONE COMPOSITE -> ONE FEATURE
+  // ===================================================================
+
+  return ee.Feature(
+    null,
+    {
+
+      // ---------------------------------------------------------------
+      // TIME
+      // ---------------------------------------------------------------
+
+      composite_start_date:
+        compositeStart.format(
+          'YYYY-MM-dd'
+        ),
+
+      composite_end_date:
+        compositeEnd.format(
+          'YYYY-MM-dd'
+        ),
+
+      composite_days:
+        compositeDays,
+
+
+      // ---------------------------------------------------------------
+      // PRIMARY GAP-FILLED TRACK
+      // ---------------------------------------------------------------
+
+      ET_primary_mm_composite:
+        ETprimaryValue,
+
+      PET_primary_mm_composite:
+        PETprimaryValue,
+
+      ET_primary_mm_day:
+        ETprimaryPerDay,
+
+      PET_primary_mm_day:
+        PETprimaryPerDay,
+
+      ET_PET_ratio_primary:
+        primaryRatio,
+
+      primary_valid_fraction:
+        primaryFraction,
+
+      primary_data_available_flag:
+        primaryAvailableFlag,
+
+
+      // ---------------------------------------------------------------
+      // STRICT QA SENSITIVITY TRACK
+      // ---------------------------------------------------------------
+
+      ET_strictQA_mm_composite:
+        ETstrictValue,
+
+      PET_strictQA_mm_composite:
+        PETstrictValue,
+
+      ET_strictQA_mm_day:
+        ETstrictPerDay,
+
+      PET_strictQA_mm_day:
+        PETstrictPerDay,
+
+      ET_PET_ratio_strictQA:
+        strictRatio,
+
+      strict_QA_fraction:
+        strictFraction,
+
+      strict_QA_data_available_flag:
+        strictAvailableFlag,
+
+
+      // ---------------------------------------------------------------
+      // QA COMPONENTS
+      // ---------------------------------------------------------------
+
+      MODLAND_good_fraction:
+        MODLANDgoodFraction,
+
+      clear_pixel_fraction:
+        clearPixelFraction,
+
+      SCF_0_or_1_fraction:
+        SCFgoodFraction
+
+    }
+  );
+
+}
+
+
+// =====================================================================
+// 8. BUILD FINAL TABLE
+// =====================================================================
+
+var mod16FC =
+  ee.FeatureCollection(
+
+    mod16.map(
+      processMOD16
+    )
+
+  );
+
+
+print('=====================================================');
+print('FINAL MOD16 TABLE');
+print('=====================================================');
+
+print(
+  'Final MOD16 row count:',
+  mod16FC.size()
+);
+
+print(
+  'First output Feature:',
+  mod16FC.first()
+);
+
+
+// =====================================================================
+// 9. VALIDATION — 2020-07-03
+// =====================================================================
+
+var validation =
+  ee.Feature(
+
+    mod16FC
+      .filter(
+        ee.Filter.eq(
+          'composite_start_date',
+          '2020-07-03'
+        )
+      )
+      .first()
+
+  );
+
+
+print('=====================================================');
+print('2020-07-03 EXPLICIT VALIDATION');
+print('=====================================================');
+
+
+print(
+  'VALIDATION start date:',
+  validation.get(
+    'composite_start_date'
+  )
+);
+
+print(
+  'VALIDATION end date:',
+  validation.get(
+    'composite_end_date'
+  )
+);
+
+print(
+  'VALIDATION composite days:',
+  validation.get(
+    'composite_days'
+  )
+);
+
+
+// PRIMARY
+
+print(
+  'VALIDATION ET primary (mm/composite):',
+  validation.get(
+    'ET_primary_mm_composite'
+  )
+);
+
+print(
+  'VALIDATION PET primary (mm/composite):',
+  validation.get(
+    'PET_primary_mm_composite'
+  )
+);
+
+print(
+  'VALIDATION ET primary (mm/day):',
+  validation.get(
+    'ET_primary_mm_day'
+  )
+);
+
+print(
+  'VALIDATION PET primary (mm/day):',
+  validation.get(
+    'PET_primary_mm_day'
+  )
+);
+
+print(
+  'VALIDATION primary ET/PET ratio:',
+  validation.get(
+    'ET_PET_ratio_primary'
+  )
+);
+
+print(
+  'VALIDATION primary valid fraction:',
+  validation.get(
+    'primary_valid_fraction'
+  )
+);
+
+print(
+  'VALIDATION primary availability flag:',
+  validation.get(
+    'primary_data_available_flag'
+  )
+);
+
+
+// STRICT QA
+
+print(
+  'VALIDATION ET strictQA (mm/composite):',
+  validation.get(
+    'ET_strictQA_mm_composite'
+  )
+);
+
+print(
+  'VALIDATION PET strictQA (mm/composite):',
+  validation.get(
+    'PET_strictQA_mm_composite'
+  )
+);
+
+print(
+  'VALIDATION ET strictQA (mm/day):',
+  validation.get(
+    'ET_strictQA_mm_day'
+  )
+);
+
+print(
+  'VALIDATION PET strictQA (mm/day):',
+  validation.get(
+    'PET_strictQA_mm_day'
+  )
+);
+
+print(
+  'VALIDATION strictQA ET/PET ratio:',
+  validation.get(
+    'ET_PET_ratio_strictQA'
+  )
+);
+
+print(
+  'VALIDATION strict QA fraction:',
+  validation.get(
+    'strict_QA_fraction'
+  )
+);
+
+print(
+  'VALIDATION strict QA availability flag:',
+  validation.get(
+    'strict_QA_data_available_flag'
+  )
+);
+
+
+// QA COMPONENTS
+
+print(
+  'VALIDATION MODLAND good fraction:',
+  validation.get(
+    'MODLAND_good_fraction'
+  )
+);
+
+print(
+  'VALIDATION clear-pixel fraction:',
+  validation.get(
+    'clear_pixel_fraction'
+  )
+);
+
+print(
+  'VALIDATION SCF 0-or-1 fraction:',
+  validation.get(
+    'SCF_0_or_1_fraction'
+  )
+);
+
+
+// =====================================================================
+// 10. FIRST COMPOSITE CHECK
+// =====================================================================
+
+var firstFeature =
+  ee.Feature(
+    mod16FC
+      .sort(
+        'composite_start_date',
+        true
+      )
+      .first()
+  );
+
+
+print('=====================================================');
+print('FIRST COMPOSITE CHECK');
+print('=====================================================');
+
+print(
+  'First composite start:',
+  firstFeature.get(
+    'composite_start_date'
+  )
+);
+
+print(
+  'First composite end:',
+  firstFeature.get(
+    'composite_end_date'
+  )
+);
+
+print(
+  'First composite days:',
+  firstFeature.get(
+    'composite_days'
+  )
+);
+
+print(
+  'First primary ET:',
+  firstFeature.get(
+    'ET_primary_mm_composite'
+  )
+);
+
+print(
+  'First strict QA fraction:',
+  firstFeature.get(
+    'strict_QA_fraction'
+  )
+);
+
+print(
+  'First strict QA availability flag:',
+  firstFeature.get(
+    'strict_QA_data_available_flag'
+  )
+);
+
+
+// =====================================================================
+// 11. LAST COMPOSITE CHECK
+// =====================================================================
+
+var lastFeature =
+  ee.Feature(
+    mod16FC
+      .sort(
+        'composite_start_date',
+        false
+      )
+      .first()
+  );
+
+
+print('=====================================================');
+print('LAST COMPOSITE CHECK');
+print('=====================================================');
+
+print(
+  'Last composite start:',
+  lastFeature.get(
+    'composite_start_date'
+  )
+);
+
+print(
+  'Last composite end:',
+  lastFeature.get(
+    'composite_end_date'
+  )
+);
+
+print(
+  'Last composite days:',
+  lastFeature.get(
+    'composite_days'
+  )
+);
+
+
+// =====================================================================
+// 12. COLLECTION-LEVEL QC
+// =====================================================================
+
+print('=====================================================');
+print('COLLECTION-LEVEL QC');
+print('=====================================================');
+
+
+print(
+  'Minimum primary valid fraction:',
+  mod16FC.aggregate_min(
+    'primary_valid_fraction'
+  )
+);
+
+print(
+  'Mean primary valid fraction:',
+  mod16FC.aggregate_mean(
+    'primary_valid_fraction'
+  )
+);
+
+print(
+  'Minimum strict QA fraction:',
+  mod16FC.aggregate_min(
+    'strict_QA_fraction'
+  )
+);
+
+print(
+  'Mean strict QA fraction:',
+  mod16FC.aggregate_mean(
+    'strict_QA_fraction'
+  )
+);
+
+
+/*
+ * CORRECTED QC:
+ *
+ * We count zero strict-coverage composites
+ * directly from strict_QA_fraction.
+ *
+ * This avoids any Boolean / 0–1 type ambiguity.
+ */
+
+var noStrictData =
+  mod16FC.filter(
+    ee.Filter.eq(
+      'strict_QA_fraction',
+      0
+    )
+  );
+
+
+print(
+  'Composites with zero strict-QA coverage:',
+  noStrictData.size()
+);
+
+
+/*
+ * Additional cross-check:
+ * numeric availability flag = 0.
+ */
+
+var noStrictDataByFlag =
+  mod16FC.filter(
+    ee.Filter.eq(
+      'strict_QA_data_available_flag',
+      0
+    )
+  );
+
+
+print(
+  'Cross-check: composites with strict availability flag = 0:',
+  noStrictDataByFlag.size()
+);
+
+
+/*
+ * Primary-data absence check.
+ */
+
+var noPrimaryData =
+  mod16FC.filter(
+    ee.Filter.eq(
+      'primary_data_available_flag',
+      0
+    )
+  );
+
+
+print(
+  'Composites with zero primary coverage:',
+  noPrimaryData.size()
+);
+
+
+// =====================================================================
+// 13. MAP VISUALIZATION
+// =====================================================================
+
+/*
+ * No .clip() is used for MODIS visualization
+ * because of the previously observed
+ * sinusoidal projection-edge issue.
+ *
+ * This has no effect on the regional
+ * reduceRegion calculations or CSV export.
+ */
+
+
+var mapImage =
+  ee.Image(
+
+    mod16
+      .filterDate(
+        '2020-07-01',
+        '2020-08-01'
+      )
+      .first()
+
+  )
+    .select(
+      'ET'
+    )
+    .multiply(
+      0.1
+    );
+
+
+Map.addLayer(
+
+  mapImage,
+
+  {
+    min: 0,
+    max: 50,
+
+    palette: [
+      'brown',
+      'yellow',
+      'green',
+      'darkgreen'
+    ]
+  },
+
+  'MOD16 ET — July 2020',
+
+  false
+
+);
+
+
+// =====================================================================
+// 14. FINAL EXPORT
+// =====================================================================
+
+Export.table.toDrive({
+
+  collection:
+    mod16FC,
+
+  description:
+    'AEZ26_MODIS_ET_PET_QC_2000_2025',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_MODIS_ET_PET_QC_2000_2025',
+
+  fileFormat:
+    'CSV',
+
+  selectors: [
+
+    // Time
+    'composite_start_date',
+    'composite_end_date',
+    'composite_days',
+
+    // Primary gap-filled track
+    'ET_primary_mm_composite',
+    'PET_primary_mm_composite',
+    'ET_primary_mm_day',
+    'PET_primary_mm_day',
+    'ET_PET_ratio_primary',
+    'primary_valid_fraction',
+    'primary_data_available_flag',
+
+    // Strict QA sensitivity track
+    'ET_strictQA_mm_composite',
+    'PET_strictQA_mm_composite',
+    'ET_strictQA_mm_day',
+    'PET_strictQA_mm_day',
+    'ET_PET_ratio_strictQA',
+    'strict_QA_fraction',
+    'strict_QA_data_available_flag',
+
+    // QA diagnostics
+    'MODLAND_good_fraction',
+    'clear_pixel_fraction',
+    'SCF_0_or_1_fraction'
+
+  ]
+
+});
+
+
+// =====================================================================
+// 15. FINAL MESSAGE
+// =====================================================================
+
+print('=====================================================');
+print('PHASE 1D FINAL v2 READY');
+print('=====================================================');
+
+print(
+  'Expected row count:',
+  1196
+);
+
+print(
+  'Expected 2020-07-03 composite days:',
+  8
+);
+
+print(
+  'Expected primary ET:',
+  '~25.58 mm/composite'
+);
+
+print(
+  'Expected primary PET:',
+  '~34.18 mm/composite'
+);
+
+print(
+  'Expected primary ET/PET:',
+  '~0.7484'
+);
+
+print(
+  'Expected primary valid fraction:',
+  '~0.9933'
+);
+
+print(
+  'Expected July 2020 strict QA fraction:',
+  '~0.0004'
+);
+
+print(
+  'Expected last composite:',
+  '2025-12-27 to 2025-12-31'
+);
+
+print(
+  'Expected last composite days:',
+  5
+);
+
+print(
+  'IMPORTANT: strict_QA series is sensitivity/QC data, not the primary ET/PET series.'
+);
+
+print(
+  'IMPORTANT: normalized mm/day fields do not create daily MODIS observations.'
+);
+
+print(
+  'If there is no red error, RUN the single MOD16 export task.'
+);
+
+print('=====================================================');

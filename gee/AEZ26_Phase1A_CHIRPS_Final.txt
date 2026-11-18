@@ -1,0 +1,686 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1A
+ * FINAL CHIRPS DAILY PRECIPITATION EXPORT
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Period:
+ * 2000-01-01 to 2025-12-31
+ *
+ * Output:
+ * AEZ26_CHIRPS_Daily_Precipitation_2000_2025.csv
+ *
+ * PURPOSE:
+ * 1. Download final research data.
+ * 2. Learn the complete GEE table-export workflow.
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+
+// filterDate() uses:
+// start = inclusive
+// end   = exclusive
+var START_DATE =
+  '2000-01-01';
+
+var END_DATE =
+  '2026-01-01';
+
+
+// CHIRPS native grid is approximately 0.05 degree.
+var SCALE_CHIRPS =
+  5566;
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+/*
+ * ee.FeatureCollection
+ *
+ * Your uploaded shapefile is stored in GEE as a FeatureCollection.
+ */
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+
+/*
+ * .geometry()
+ *
+ * Extracts the actual geometry that will be used
+ * in reduceRegion().
+ */
+
+var studyArea =
+  studyAreaFC.geometry();
+
+
+print(
+  'Study Area:',
+  studyAreaFC
+);
+
+print(
+  'Study Area feature count:',
+  studyAreaFC.size()
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  10
+);
+
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. CHIRPS IMAGECOLLECTION
+// =====================================================================
+
+/*
+ * DATASET:
+ *
+ * UCSB-CHG/CHIRPS/DAILY
+ *
+ * BAND:
+ *
+ * precipitation
+ *
+ * UNIT:
+ *
+ * mm/day
+ *
+ * TEMPORAL RESOLUTION:
+ *
+ * Daily
+ */
+
+
+/*
+ * ee.ImageCollection(...)
+ *
+ * Loads a time series of raster images.
+ */
+
+var chirps =
+  ee.ImageCollection(
+    'UCSB-CHG/CHIRPS/DAILY'
+  );
+
+
+/*
+ * filterDate()
+ *
+ * Keeps only images between:
+ *
+ * 2000-01-01 inclusive
+ *
+ * and
+ *
+ * 2026-01-01 exclusive.
+ *
+ * Therefore the last included date is:
+ *
+ * 2025-12-31
+ */
+
+chirps =
+  chirps.filterDate(
+    START_DATE,
+    END_DATE
+  );
+
+
+/*
+ * filterBounds()
+ *
+ * Keeps images whose footprint intersects AEZ-26.
+ *
+ * IMPORTANT:
+ *
+ * filterBounds() does NOT clip the image.
+ */
+
+chirps =
+  chirps.filterBounds(
+    studyArea
+  );
+
+
+print(
+  'CHIRPS image count:',
+  chirps.size()
+);
+
+
+/*
+ * EXPECTED:
+ *
+ * 9497
+ *
+ * We already observed this in diagnostic testing.
+ */
+
+
+print(
+  'First CHIRPS image:',
+  chirps.first()
+);
+
+
+print(
+  'First 3 CHIRPS images:',
+  chirps.limit(3)
+);
+
+
+// =====================================================================
+// 3. VALID-PIXEL FRACTION HELPER
+// =====================================================================
+
+/*
+ * WHY QC?
+ *
+ * A precipitation value alone does not tell us
+ * how much valid raster coverage contributed.
+ *
+ * masked pixel != zero rainfall
+ *
+ * masked pixel:
+ *   no valid observation
+ *
+ * zero rainfall:
+ *   valid observation of no rain
+ */
+
+
+function getValidPixelFraction(
+  image,
+  bandName,
+  geometry,
+  scale
+) {
+
+  /*
+   * image.mask()
+   *
+   * valid pixel   -> 1
+   * masked pixel  -> masked
+   *
+   * .unmask(0)
+   *
+   * turns masked locations into explicit zero
+   * for calculating coverage fraction.
+   */
+
+  var validMask =
+    image
+      .select(bandName)
+      .mask()
+      .rename('valid')
+      .unmask(0);
+
+
+  var fraction =
+    validMask.reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        geometry,
+
+      scale:
+        scale,
+
+      maxPixels:
+        1e9
+
+    });
+
+
+  return fraction.get(
+    'valid'
+  );
+}
+
+
+// =====================================================================
+// 4. CONVERT EACH DAILY IMAGE TO ONE TABLE ROW
+// =====================================================================
+
+/*
+ * THIS IS THE CORE LEARNING STEP.
+ *
+ * We currently have:
+ *
+ * ImageCollection
+ *
+ * containing 9497 daily raster images.
+ *
+ *
+ * We want:
+ *
+ * CSV table
+ *
+ * containing 9497 rows.
+ *
+ *
+ * Therefore:
+ *
+ * one raster image
+ *       ↓
+ * reduceRegion()
+ *       ↓
+ * one regional precipitation number
+ *       ↓
+ * ee.Feature
+ *       ↓
+ * one table row
+ */
+
+
+var chirpsDailyFC =
+  ee.FeatureCollection(
+
+    chirps.map(
+      function(image) {
+
+        // --------------------------------------------------------------
+        // A. DATE
+        // --------------------------------------------------------------
+
+        var date =
+          image
+            .date()
+            .format(
+              'YYYY-MM-dd'
+            );
+
+
+        // --------------------------------------------------------------
+        // B. SPATIAL MEAN PRECIPITATION
+        // --------------------------------------------------------------
+
+        /*
+         * reduceRegion()
+         *
+         * converts many raster pixels inside AEZ-26
+         * into one regional statistic.
+         *
+         * Here:
+         *
+         * many CHIRPS precipitation pixels
+         *
+         *       ↓
+         *
+         * spatial mean
+         *
+         *       ↓
+         *
+         * one AEZ-level precipitation value
+         */
+
+
+        var meanPrecipitation =
+          image
+            .select(
+              'precipitation'
+            )
+            .reduceRegion({
+
+              reducer:
+                ee.Reducer.mean(),
+
+              geometry:
+                studyArea,
+
+              scale:
+                SCALE_CHIRPS,
+
+              maxPixels:
+                1e9
+
+            })
+            .get(
+              'precipitation'
+            );
+
+
+        // --------------------------------------------------------------
+        // C. VALID PIXEL COUNT
+        // --------------------------------------------------------------
+
+        var validPixelCount =
+          image
+            .select(
+              'precipitation'
+            )
+            .reduceRegion({
+
+              reducer:
+                ee.Reducer.count(),
+
+              geometry:
+                studyArea,
+
+              scale:
+                SCALE_CHIRPS,
+
+              maxPixels:
+                1e9
+
+            })
+            .get(
+              'precipitation'
+            );
+
+
+        // --------------------------------------------------------------
+        // D. VALID COVERAGE FRACTION
+        // --------------------------------------------------------------
+
+        var validFraction =
+          getValidPixelFraction(
+
+            image,
+
+            'precipitation',
+
+            studyArea,
+
+            SCALE_CHIRPS
+
+          );
+
+
+        // --------------------------------------------------------------
+        // E. ONE IMAGE -> ONE FEATURE -> ONE CSV ROW
+        // --------------------------------------------------------------
+
+        return ee.Feature(
+          null,
+          {
+
+            'date':
+              date,
+
+            'precipitation_mm_day':
+              meanPrecipitation,
+
+            'valid_pixel_count':
+              validPixelCount,
+
+            'valid_pixel_fraction':
+              validFraction
+
+          }
+        );
+
+      }
+    )
+
+  );
+
+
+// =====================================================================
+// 5. QC BEFORE EXPORT
+// =====================================================================
+
+/*
+ * Do NOT print all 9497 Features.
+ *
+ * Large collection previews can trigger:
+ *
+ * "Collection query aborted after accumulating over 5000 elements."
+ */
+
+
+print(
+  'Final CHIRPS row count:',
+  chirpsDailyFC.size()
+);
+
+
+print(
+  'First output row:',
+  chirpsDailyFC.first()
+);
+
+
+print(
+  'First row properties:',
+  ee.Feature(
+    chirpsDailyFC.first()
+  ).toDictionary()
+);
+
+
+print(
+  'First 5 rows:',
+  chirpsDailyFC.limit(5)
+);
+
+
+/*
+ * Find last record without printing the entire collection.
+ */
+
+var chirpsWithTime =
+  chirpsDailyFC.map(
+    function(feature) {
+
+      return feature.set(
+        'sort_date',
+        ee.Date(
+          feature.get('date')
+        ).millis()
+      );
+
+    }
+  );
+
+
+var lastRow =
+  chirpsWithTime
+    .sort(
+      'sort_date',
+      false
+    )
+    .first();
+
+
+print(
+  'Last output row:',
+  lastRow
+);
+
+
+/*
+ * Missing precipitation values.
+ */
+
+var missingPrecipitationRows =
+  chirpsDailyFC.filter(
+    ee.Filter.notNull([
+      'precipitation_mm_day'
+    ]).not()
+  );
+
+
+print(
+  'Rows with missing precipitation:',
+  missingPrecipitationRows.size()
+);
+
+
+/*
+ * QC summary for coverage.
+ */
+
+print(
+  'Minimum valid-pixel fraction:',
+  chirpsDailyFC.aggregate_min(
+    'valid_pixel_fraction'
+  )
+);
+
+
+print(
+  'Mean valid-pixel fraction:',
+  chirpsDailyFC.aggregate_mean(
+    'valid_pixel_fraction'
+  )
+);
+
+
+// =====================================================================
+// 6. SIMPLE MAP CHECK
+// =====================================================================
+
+/*
+ * Visualize one rainfall day only.
+ *
+ * Visualization settings DO NOT affect CSV data.
+ */
+
+
+var sampleImage =
+  ee.Image(
+    chirps
+      .filterDate(
+        '2020-07-01',
+        '2020-07-02'
+      )
+      .first()
+  );
+
+
+Map.addLayer(
+
+  sampleImage.clip(
+    studyArea
+  ),
+
+  {
+
+    min:
+      0,
+
+    max:
+      50,
+
+    palette: [
+      'white',
+      'lightblue',
+      'blue',
+      'darkblue'
+    ]
+
+  },
+
+  'CHIRPS 2020-07-01'
+
+);
+
+
+// =====================================================================
+// 7. FINAL GOOGLE DRIVE EXPORT
+// =====================================================================
+
+/*
+ * Export.table.toDrive()
+ *
+ * FeatureCollection
+ *
+ *       ↓
+ *
+ * CSV
+ *
+ *
+ * One Feature = one CSV row.
+ */
+
+
+Export.table.toDrive({
+
+  collection:
+    chirpsDailyFC,
+
+  description:
+    'AEZ26_CHIRPS_Daily_Precipitation_2000_2025',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_CHIRPS_Daily_Precipitation_2000_2025',
+
+  fileFormat:
+    'CSV',
+
+  selectors: [
+
+    'date',
+
+    'precipitation_mm_day',
+
+    'valid_pixel_count',
+
+    'valid_pixel_fraction'
+
+  ]
+
+});
+
+
+print(
+  '====================================================='
+);
+
+print(
+  'CHIRPS PROCESSING COMPLETE'
+);
+
+print(
+  'Check QC outputs above BEFORE starting the Task.'
+);
+
+print(
+  'Expected final row count = 9497.'
+);
+
+print(
+  'If QC is clean, open Tasks and RUN only the CHIRPS export.'
+);
+
+print(
+  '====================================================='
+);

@@ -1,0 +1,8 @@
+# Python dependencies for the scripts in this repository (historical flash-drought study only).
+# Versions used when the QA runner was executed (Python 3.13): see qa_results.json / QA report. Exact pins were not otherwise recorded.
+numpy
+pandas
+scipy
+matplotlib
+pillow
+# Google Earth Engine scripts (gee/) run in the Earth Engine Code Editor and need an Earth Engine account; they are not Python dependencies.

@@ -1,0 +1,1358 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1B
+ * ERA5-LAND FINAL RESEARCH EXPORT — MEMORY-SAFE CHUNKED VERSION
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Research Period:
+ * 2000-01-01 to 2025-12-31
+ *
+ * IMPORTANT:
+ * The 5 export chunks are ONLY for computation management.
+ * The scientific methodology is identical for every date.
+ *
+ * Later the 5 CSV files will be merged into ONE final ERA5 dataset.
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+var MAIN_START =
+  '2000-01-01';
+
+var MAIN_END =
+  '2026-01-01'; // exclusive
+
+var SCALE_ERA5 =
+  11132;
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+var studyArea =
+  studyAreaFC.geometry();
+
+
+print('=====================================================');
+print('PHASE 1B — ERA5-LAND');
+print('=====================================================');
+
+print(
+  'Study area:',
+  studyAreaFC
+);
+
+print(
+  'Study-area feature count:',
+  studyAreaFC.size()
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  10
+);
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. ERA5-LAND SOURCE COLLECTIONS
+// =====================================================================
+
+/*
+ * LEARNING NOTE
+ *
+ * We intentionally use TWO ERA5-Land products.
+ *
+ *
+ * A. HOURLY
+ *
+ * ECMWF/ERA5_LAND/HOURLY
+ *
+ * Used for:
+ *
+ * temperature
+ * dewpoint
+ * relative humidity
+ * vapor pressure deficit
+ * wind speed
+ *
+ *
+ * WHY?
+ *
+ * RH, VPD and wind magnitude should be derived at the hourly
+ * time step BEFORE daily temporal aggregation.
+ *
+ *
+ * B. DAILY_AGGR
+ *
+ * ECMWF/ERA5_LAND/DAILY_AGGR
+ *
+ * Used for:
+ *
+ * daily Tmax
+ * daily Tmin
+ * radiation accumulations
+ * total evaporation
+ * potential evaporation
+ */
+
+
+var era5HourlyCol =
+  ee.ImageCollection(
+    'ECMWF/ERA5_LAND/HOURLY'
+  )
+    .filterDate(
+      MAIN_START,
+      MAIN_END
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+var era5DailyAggrCol =
+  ee.ImageCollection(
+    'ECMWF/ERA5_LAND/DAILY_AGGR'
+  )
+    .filterDate(
+      MAIN_START,
+      MAIN_END
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+print(
+  'ERA5 hourly source count:',
+  era5HourlyCol.size()
+);
+
+print(
+  'ERA5 daily-aggregate source count:',
+  era5DailyAggrCol.size()
+);
+
+
+/*
+ * From our earlier diagnostic, expected:
+ *
+ * Hourly = 227928
+ * Daily  = 9497
+ */
+
+
+// =====================================================================
+// 3. HOURLY PHYSICS
+// =====================================================================
+
+/*
+ * LEARNING FLOW
+ *
+ * ERA5 hourly raster
+ *       ↓
+ * Temperature K -> °C
+ *       ↓
+ * Dewpoint K -> °C
+ *       ↓
+ * hourly vapor-pressure physics
+ *       ↓
+ * hourly RH
+ * hourly VPD
+ *       ↓
+ * hourly wind magnitude
+ *
+ * Only AFTER these calculations do we aggregate to daily values.
+ */
+
+
+function processERA5Hourly(img) {
+
+  // ---------------------------------------------------------------
+  // A. TEMPERATURE
+  // ---------------------------------------------------------------
+
+  /*
+   * ERA5 temperature units:
+   *
+   * Kelvin
+   *
+   * Celsius =
+   * Kelvin - 273.15
+   */
+
+  var temperatureC =
+    img
+      .select(
+        'temperature_2m'
+      )
+      .subtract(
+        273.15
+      );
+
+
+  var dewpointC =
+    img
+      .select(
+        'dewpoint_temperature_2m'
+      )
+      .subtract(
+        273.15
+      );
+
+
+  // ---------------------------------------------------------------
+  // B. WIND SPEED
+  // ---------------------------------------------------------------
+
+  /*
+   * ERA5 gives wind as vector components:
+   *
+   * u = east-west component
+   * v = north-south component
+   *
+   * Wind speed:
+   *
+   * sqrt(u² + v²)
+   *
+   * IMPORTANT:
+   *
+   * We calculate hourly wind magnitude FIRST.
+   *
+   * We do NOT calculate:
+   *
+   * sqrt(mean(u)² + mean(v)²)
+   *
+   * because changing wind direction can make components cancel.
+   */
+
+  var u10 =
+    img.select(
+      'u_component_of_wind_10m'
+    );
+
+  var v10 =
+    img.select(
+      'v_component_of_wind_10m'
+    );
+
+
+  var windSpeed =
+    u10
+      .pow(2)
+      .add(
+        v10.pow(2)
+      )
+      .sqrt()
+      .rename(
+        'wind_speed_m_s'
+      );
+
+
+  // ---------------------------------------------------------------
+  // C. SATURATION VAPOR PRESSURE
+  // ---------------------------------------------------------------
+
+  /*
+   * Tetens-type equation:
+   *
+   * es =
+   * 0.61078 × exp[
+   *   (17.27 × T) /
+   *   (T + 237.3)
+   * ]
+   *
+   * Unit = kPa
+   */
+
+  var saturationVaporPressure =
+    temperatureC.expression(
+
+      '0.61078 * exp((17.27 * T) / (T + 237.3))',
+
+      {
+        T: temperatureC
+      }
+
+    );
+
+
+  // ---------------------------------------------------------------
+  // D. ACTUAL VAPOR PRESSURE
+  // ---------------------------------------------------------------
+
+  /*
+   * Dewpoint temperature represents saturation
+   * temperature at the existing water-vapor content.
+   *
+   * Therefore actual vapor pressure is estimated
+   * from dewpoint using the same equation.
+   */
+
+  var actualVaporPressure =
+    dewpointC.expression(
+
+      '0.61078 * exp((17.27 * Td) / (Td + 237.3))',
+
+      {
+        Td: dewpointC
+      }
+
+    );
+
+
+  // ---------------------------------------------------------------
+  // E. VAPOR PRESSURE DEFICIT
+  // ---------------------------------------------------------------
+
+  /*
+   * VPD =
+   * saturation vapor pressure
+   * -
+   * actual vapor pressure
+   *
+   * Unit = kPa
+   */
+
+  var VPD =
+    saturationVaporPressure
+      .subtract(
+        actualVaporPressure
+      )
+      .max(0)
+      .rename(
+        'vpd_kPa'
+      );
+
+
+  // ---------------------------------------------------------------
+  // F. RELATIVE HUMIDITY
+  // ---------------------------------------------------------------
+
+  /*
+   * RH =
+   *
+   * actual vapor pressure
+   * ---------------------
+   * saturation vapor pressure
+   *
+   * × 100
+   */
+
+  var RH =
+    actualVaporPressure
+      .divide(
+        saturationVaporPressure
+      )
+      .multiply(
+        100
+      )
+      .clamp(
+        0,
+        100
+      )
+      .rename(
+        'rh_pct'
+      );
+
+
+  return ee.Image.cat([
+
+    temperatureC.rename(
+      't2m_C'
+    ),
+
+    dewpointC.rename(
+      'td_C'
+    ),
+
+    RH,
+
+    VPD,
+
+    windSpeed
+
+  ])
+    .copyProperties(
+      img,
+      [
+        'system:time_start'
+      ]
+    );
+
+}
+
+
+// Apply the same physics to every hourly ERA5 image.
+var era5HourlyProcessed =
+  era5HourlyCol.map(
+    processERA5Hourly
+  );
+
+
+// =====================================================================
+// 4. DAILY FEATURE-COLLECTION BUILDER
+// =====================================================================
+
+/*
+ * THIS FUNCTION IS THE CORE OF PHASE 1B.
+ *
+ * For any requested time period:
+ *
+ * hourly ERA5
+ *      ↓
+ * temporal daily aggregation
+ *      ↓
+ * daily raster
+ *      ↓
+ * spatial AEZ mean
+ *      ↓
+ * ee.Feature
+ *      ↓
+ * one CSV row per day
+ */
+
+
+function buildERA5DailyFC(
+  startString,
+  endString
+) {
+
+  var startDate =
+    ee.Date(
+      startString
+    );
+
+  var endDate =
+    ee.Date(
+      endString
+    );
+
+
+  var numberOfDays =
+    endDate.difference(
+      startDate,
+      'day'
+    );
+
+
+  var dayOffsets =
+    ee.List.sequence(
+      0,
+      numberOfDays.subtract(1)
+    );
+
+
+  var dailyFeatures =
+    dayOffsets.map(
+      function(offset) {
+
+        var currentDay =
+          startDate.advance(
+            offset,
+            'day'
+          );
+
+
+        var nextDay =
+          currentDay.advance(
+            1,
+            'day'
+          );
+
+
+        // ==========================================================
+        // 4A. HOURLY DATA FOR THIS UTC DAY
+        // ==========================================================
+
+        var hourlySub =
+          era5HourlyProcessed.filterDate(
+            currentDay,
+            nextDay
+          );
+
+
+        var hourlyCount =
+          hourlySub.size();
+
+
+        // ==========================================================
+        // 4B. TEMPORAL AGGREGATION
+        // ==========================================================
+
+        /*
+         * These calculations happen across TIME.
+         *
+         * Example:
+         *
+         * 24 hourly VPD rasters
+         *
+         *      ↓
+         *
+         * one daily VPD raster
+         */
+
+
+        var t2mMean =
+          hourlySub
+            .select(
+              't2m_C'
+            )
+            .mean();
+
+
+        var dewpointMean =
+          hourlySub
+            .select(
+              'td_C'
+            )
+            .mean();
+
+
+        var rhMean =
+          hourlySub
+            .select(
+              'rh_pct'
+            )
+            .mean();
+
+
+        var vpdMean =
+          hourlySub
+            .select(
+              'vpd_kPa'
+            )
+            .mean();
+
+
+        /*
+         * Daily VPD maximum:
+         *
+         * Each ERA5 pixel gets its own maximum
+         * hourly VPD during the UTC day.
+         *
+         * Later we spatially average those
+         * pixel-level daily maxima over AEZ-26.
+         */
+
+        var vpdMax =
+          hourlySub
+            .select(
+              'vpd_kPa'
+            )
+            .max();
+
+
+        var windMean =
+          hourlySub
+            .select(
+              'wind_speed_m_s'
+            )
+            .mean();
+
+
+        // ==========================================================
+        // 4C. DAILY AGGREGATED ERA5-LAND IMAGE
+        // ==========================================================
+
+        var dailySub =
+          era5DailyAggrCol.filterDate(
+            currentDay,
+            nextDay
+          );
+
+
+        var dailyCount =
+          dailySub.size();
+
+
+        var dailyImage =
+          ee.Image(
+            dailySub.first()
+          );
+
+
+        // Daily maximum and minimum temperature.
+        var t2mMax =
+          dailyImage
+            .select(
+              'temperature_2m_max'
+            )
+            .subtract(
+              273.15
+            );
+
+
+        var t2mMin =
+          dailyImage
+            .select(
+              'temperature_2m_min'
+            )
+            .subtract(
+              273.15
+            );
+
+
+        // ==========================================================
+        // 4D. RADIATION
+        // ==========================================================
+
+        /*
+         * ERA5 radiation units:
+         *
+         * J/m² per day
+         *
+         * Convert to:
+         *
+         * MJ/m²/day
+         *
+         * divide by 1,000,000
+         */
+
+
+        var solarRadiation =
+          dailyImage
+            .select(
+              'surface_solar_radiation_downwards_sum'
+            )
+            .divide(
+              1e6
+            );
+
+
+        var netSolarRadiation =
+          dailyImage
+            .select(
+              'surface_net_solar_radiation_sum'
+            )
+            .divide(
+              1e6
+            );
+
+
+        var netThermalRadiation =
+          dailyImage
+            .select(
+              'surface_net_thermal_radiation_sum'
+            )
+            .divide(
+              1e6
+            );
+
+
+        /*
+         * Net radiation =
+         *
+         * net shortwave
+         * +
+         * net longwave
+         */
+
+        var netRadiation =
+          netSolarRadiation.add(
+            netThermalRadiation
+          );
+
+
+        // ==========================================================
+        // 4E. EVAPORATION
+        // ==========================================================
+
+        /*
+         * ERA5 convention:
+         *
+         * downward vertical flux = positive
+         *
+         * evaporation normally = negative
+         *
+         *
+         * Source unit:
+         * meters water equivalent
+         *
+         * Convert to positive evaporation depth:
+         *
+         * × (-1000)
+         *
+         * -> mm/day
+         *
+         *
+         * IMPORTANT:
+         *
+         * We do NOT silently clamp unusual values.
+         *
+         * GEE/ECMWF documentation warns that accumulated
+         * flow bands can occasionally contain packing-related
+         * negative or excessively high values.
+         *
+         * Those will be identified during CSV QC.
+         */
+
+
+        var totalEvaporation =
+          dailyImage
+            .select(
+              'total_evaporation_sum'
+            )
+            .multiply(
+              -1000
+            );
+
+
+        /*
+         * This is ERA5 POTENTIAL EVAPORATION.
+         *
+         * It is NOT automatically equivalent
+         * to FAO-56 reference ET0.
+         */
+
+        var potentialEvaporation =
+          dailyImage
+            .select(
+              'potential_evaporation_sum'
+            )
+            .multiply(
+              -1000
+            );
+
+
+        // ==========================================================
+        // 4F. COMBINE DAILY RASTERS
+        // ==========================================================
+
+        var dailyMultiBand =
+          ee.Image.cat([
+
+            t2mMean.rename(
+              't2m_mean_C'
+            ),
+
+            t2mMax.rename(
+              't2m_max_C'
+            ),
+
+            t2mMin.rename(
+              't2m_min_C'
+            ),
+
+            dewpointMean.rename(
+              'dewpoint_mean_C'
+            ),
+
+            rhMean.rename(
+              'rh_pct'
+            ),
+
+            vpdMean.rename(
+              'vpd_mean_kPa'
+            ),
+
+            vpdMax.rename(
+              'vpd_max_kPa'
+            ),
+
+            windMean.rename(
+              'wind_speed_mean_m_s'
+            ),
+
+            solarRadiation.rename(
+              'solar_radiation'
+            ),
+
+            netSolarRadiation.rename(
+              'net_solar_radiation'
+            ),
+
+            netThermalRadiation.rename(
+              'net_thermal_radiation'
+            ),
+
+            netRadiation.rename(
+              'net_radiation'
+            ),
+
+            totalEvaporation.rename(
+              'total_evaporation'
+            ),
+
+            potentialEvaporation.rename(
+              'potential_evaporation'
+            )
+
+          ]);
+
+
+        // ==========================================================
+        // 4G. SPATIAL AGGREGATION
+        // ==========================================================
+
+        /*
+         * Everything above converted:
+         *
+         * hourly data
+         * ->
+         * daily rasters
+         *
+         * That was TEMPORAL processing.
+         *
+         *
+         * Now reduceRegion() converts:
+         *
+         * many ERA5 grid cells
+         * ->
+         * one AEZ-level value
+         *
+         * That is SPATIAL aggregation.
+         */
+
+
+        var stats =
+          dailyMultiBand.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean(),
+
+            geometry:
+              studyArea,
+
+            scale:
+              SCALE_ERA5,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              2
+
+          });
+
+
+        // ==========================================================
+        // 4H. ONE DAY -> ONE TABLE ROW
+        // ==========================================================
+
+        return ee.Feature(
+          null,
+          {
+
+            date:
+              currentDay.format(
+                'YYYY-MM-dd'
+              ),
+
+
+            /*
+             * QC metadata.
+             *
+             * Expected:
+             *
+             * hourly images = 24
+             * daily aggregate images = 1
+             */
+
+            number_of_hourly_ERA5_images_used:
+              hourlyCount,
+
+            number_of_daily_ERA5_images_used:
+              dailyCount,
+
+            complete_day_flag:
+              hourlyCount
+                .eq(24)
+                .and(
+                  dailyCount.eq(1)
+                ),
+
+
+            // ---------------------------------------------
+            // Temperature
+            // ---------------------------------------------
+
+            t2m_mean_C:
+              stats.get(
+                't2m_mean_C'
+              ),
+
+            t2m_max_C:
+              stats.get(
+                't2m_max_C'
+              ),
+
+            t2m_min_C:
+              stats.get(
+                't2m_min_C'
+              ),
+
+            dewpoint_mean_C:
+              stats.get(
+                'dewpoint_mean_C'
+              ),
+
+
+            // ---------------------------------------------
+            // Atmospheric moisture demand
+            // ---------------------------------------------
+
+            relative_humidity_mean_pct:
+              stats.get(
+                'rh_pct'
+              ),
+
+            VPD_mean_kPa:
+              stats.get(
+                'vpd_mean_kPa'
+              ),
+
+            VPD_max_kPa:
+              stats.get(
+                'vpd_max_kPa'
+              ),
+
+
+            // ---------------------------------------------
+            // Wind
+            // ---------------------------------------------
+
+            wind_speed_mean_m_s:
+              stats.get(
+                'wind_speed_mean_m_s'
+              ),
+
+
+            // ---------------------------------------------
+            // Radiation
+            // ---------------------------------------------
+
+            solar_radiation_MJ_m2_day:
+              stats.get(
+                'solar_radiation'
+              ),
+
+            net_solar_radiation_MJ_m2_day:
+              stats.get(
+                'net_solar_radiation'
+              ),
+
+            net_thermal_radiation_MJ_m2_day:
+              stats.get(
+                'net_thermal_radiation'
+              ),
+
+            net_radiation_MJ_m2_day:
+              stats.get(
+                'net_radiation'
+              ),
+
+
+            // ---------------------------------------------
+            // Evaporation
+            // ---------------------------------------------
+
+            total_evaporation_mm_day:
+              stats.get(
+                'total_evaporation'
+              ),
+
+            ERA5_potential_evaporation_mm_day:
+              stats.get(
+                'potential_evaporation'
+              )
+
+          }
+        );
+
+      }
+    );
+
+
+  return ee.FeatureCollection(
+    dailyFeatures
+  );
+
+}
+
+
+// =====================================================================
+// 5. ONE-DAY LEARNING / SCIENTIFIC TEST
+// =====================================================================
+
+/*
+ * Before trusting a 26-year export,
+ * verify one known day.
+ *
+ * We already tested 2020-07-01 earlier.
+ */
+
+
+var oneDayTest =
+  buildERA5DailyFC(
+    '2020-07-01',
+    '2020-07-02'
+  );
+
+
+print(
+  '====================================================='
+);
+
+print(
+  'ONE-DAY ERA5 TEST'
+);
+
+print(
+  '====================================================='
+);
+
+
+print(
+  '2020-07-01 TEST ROW:',
+  ee.Feature(
+    oneDayTest.first()
+  ).toDictionary()
+);
+
+
+/*
+ * Expected from our previous diagnostic:
+ *
+ * hourly count = 24
+ *
+ * tmean ≈ 29.56 °C
+ * tmax  ≈ 33.84 °C
+ * tmin  ≈ 26.51 °C
+ *
+ * RH ≈ 83.72 %
+ *
+ * VPD mean ≈ 0.73 kPa
+ * VPD max  ≈ 1.91 kPa
+ *
+ * wind ≈ 1.78 m/s
+ *
+ * solar ≈ 18.83 MJ/m²/day
+ *
+ * total evaporation ≈ 3.48 mm/day
+ *
+ * potential evaporation ≈ 6.52 mm/day
+ */
+
+
+// =====================================================================
+// 6. MEMORY-SAFE EXPORT CHUNKS
+// =====================================================================
+
+/*
+ * WHY CHUNKS?
+ *
+ * Full period =
+ * 9497 daily records
+ * generated from
+ * 227,928 hourly ERA5 images.
+ *
+ * Interactive evaluation of the full computation graph previously
+ * exceeded the GEE user-memory limit.
+ *
+ * Splitting the batch export changes ONLY the computational packaging.
+ *
+ * It does NOT change:
+ *
+ * formulas
+ * dates
+ * units
+ * reducers
+ * spatial scale
+ * temporal aggregation
+ *
+ *
+ * We will merge these CSV files later.
+ */
+
+
+var chunks = [
+
+  {
+    label:
+      '2000_2004',
+
+    start:
+      '2000-01-01',
+
+    end:
+      '2005-01-01'
+  },
+
+
+  {
+    label:
+      '2005_2009',
+
+    start:
+      '2005-01-01',
+
+    end:
+      '2010-01-01'
+  },
+
+
+  {
+    label:
+      '2010_2014',
+
+    start:
+      '2010-01-01',
+
+    end:
+      '2015-01-01'
+  },
+
+
+  {
+    label:
+      '2015_2019',
+
+    start:
+      '2015-01-01',
+
+    end:
+      '2020-01-01'
+  },
+
+
+  {
+    label:
+      '2020_2025',
+
+    start:
+      '2020-01-01',
+
+    end:
+      '2026-01-01'
+  }
+
+];
+
+
+// =====================================================================
+// 7. FINAL CSV COLUMNS
+// =====================================================================
+
+var selectors = [
+
+  'date',
+
+  'number_of_hourly_ERA5_images_used',
+
+  'number_of_daily_ERA5_images_used',
+
+  'complete_day_flag',
+
+  't2m_mean_C',
+
+  't2m_max_C',
+
+  't2m_min_C',
+
+  'dewpoint_mean_C',
+
+  'relative_humidity_mean_pct',
+
+  'VPD_mean_kPa',
+
+  'VPD_max_kPa',
+
+  'wind_speed_mean_m_s',
+
+  'solar_radiation_MJ_m2_day',
+
+  'net_solar_radiation_MJ_m2_day',
+
+  'net_thermal_radiation_MJ_m2_day',
+
+  'net_radiation_MJ_m2_day',
+
+  'total_evaporation_mm_day',
+
+  'ERA5_potential_evaporation_mm_day'
+
+];
+
+
+// =====================================================================
+// 8. CREATE EXPORT TASKS
+// =====================================================================
+
+/*
+ * IMPORTANT:
+ *
+ * This JavaScript .forEach() is CLIENT-SIDE.
+ *
+ * It simply creates five Export Tasks.
+ *
+ * The scientific data processing inside each task
+ * remains Earth Engine server-side.
+ */
+
+
+chunks.forEach(
+  function(chunk) {
+
+    var chunkFC =
+      buildERA5DailyFC(
+        chunk.start,
+        chunk.end
+      );
+
+
+    print(
+      'Chunk ' +
+      chunk.label +
+      ' expected row count:',
+
+      ee.Date(
+        chunk.end
+      ).difference(
+        ee.Date(
+          chunk.start
+        ),
+        'day'
+      )
+    );
+
+
+    Export.table.toDrive({
+
+      collection:
+        chunkFC,
+
+      description:
+        'AEZ26_ERA5Land_Daily_' +
+        chunk.label,
+
+      folder:
+        DRIVE_FOLDER,
+
+      fileNamePrefix:
+        'AEZ26_ERA5Land_Daily_' +
+        chunk.label,
+
+      fileFormat:
+        'CSV',
+
+      selectors:
+        selectors
+
+    });
+
+  }
+);
+
+
+// =====================================================================
+// 9. MAP LEARNING LAYER
+// =====================================================================
+
+/*
+ * Show the DAILY MEAN VPD raster
+ * for the same test day.
+ *
+ * This is visualization only.
+ */
+
+
+var testHourly =
+  era5HourlyProcessed.filterDate(
+    '2020-07-01',
+    '2020-07-02'
+  );
+
+
+var testDailyMeanVPD =
+  testHourly
+    .select(
+      'vpd_kPa'
+    )
+    .mean();
+
+
+Map.addLayer(
+
+  testDailyMeanVPD.clip(
+    studyArea
+  ),
+
+  {
+    min:
+      0,
+
+    max:
+      2,
+
+    palette: [
+      'blue',
+      'yellow',
+      'red'
+    ]
+  },
+
+  'ERA5 Daily Mean VPD — 2020-07-01'
+
+);
+
+
+// =====================================================================
+// 10. FINAL MESSAGE
+// =====================================================================
+
+print(
+  '====================================================='
+);
+
+print(
+  'PHASE 1B SCRIPT INITIALIZED'
+);
+
+print(
+  'First inspect the 2020-07-01 test row.'
+);
+
+print(
+  'Do NOT evaluate/print the full 26-year FeatureCollection.'
+);
+
+print(
+  'Five batch export tasks should appear under Tasks.'
+);
+
+print(
+  'Start the first chunk only after the one-day test has no red error.'
+);
+
+print(
+  '====================================================='
+);

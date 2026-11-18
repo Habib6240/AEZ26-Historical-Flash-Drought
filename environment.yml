@@ -1,0 +1,11 @@
+name: aez26
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - pillow
+  - pip

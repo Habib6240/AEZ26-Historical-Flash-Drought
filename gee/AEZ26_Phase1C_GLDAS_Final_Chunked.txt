@@ -1,0 +1,1154 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1C
+ * GLDAS v2.1 NOAH — FINAL RESEARCH EXPORT
+ * MEMORY-SAFE CHUNKED VERSION
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Period:
+ * 2000-01-01 to 2025-12-31
+ *
+ * Dataset:
+ * NASA/GLDAS/V021/NOAH/G025/T3H
+ *
+ * IMPORTANT:
+ * Export chunks are only for GEE memory/computation management.
+ * Scientific processing is identical for every day.
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+var MAIN_START =
+  '2000-01-01';
+
+var MAIN_END =
+  '2026-01-01';   // exclusive
+
+var SCALE_GLDAS =
+  27830;
+
+
+/*
+ * IMPORTANT:
+ *
+ * Flux values describe the PREVIOUS 3-hour period.
+ *
+ * Therefore the calendar day 2025-12-31 requires
+ * the image timestamped:
+ *
+ * 2026-01-01 00:00 UTC
+ *
+ * We extend the SOURCE collection by 3 hours.
+ *
+ * Output dates still stop on 2025-12-31.
+ */
+
+var GLDAS_SOURCE_END =
+  ee.Date(MAIN_END)
+    .advance(
+      3,
+      'hour'
+    );
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+var studyArea =
+  studyAreaFC.geometry();
+
+
+print('=====================================================');
+print('PHASE 1C — GLDAS');
+print('=====================================================');
+
+print(
+  'Study area:',
+  studyAreaFC
+);
+
+print(
+  'Feature count:',
+  studyAreaFC.size()
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  10
+);
+
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. LOAD GLDAS
+// =====================================================================
+
+/*
+ * Dataset:
+ *
+ * NASA/GLDAS/V021/NOAH/G025/T3H
+ *
+ * Native cadence:
+ * 3 hours
+ *
+ * Approximate spatial resolution:
+ * 0.25 degree / ~27.8 km
+ */
+
+
+var gldasCol =
+  ee.ImageCollection(
+    'NASA/GLDAS/V021/NOAH/G025/T3H'
+  )
+    .filterDate(
+      MAIN_START,
+      GLDAS_SOURCE_END
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+print(
+  'GLDAS source image count:',
+  gldasCol.size()
+);
+
+
+print(
+  'First GLDAS image:',
+  gldasCol.first()
+);
+
+
+/*
+ * Expected full source count from our earlier diagnostic:
+ *
+ * 75976
+ */
+
+
+// =====================================================================
+// 3. IMPORTANT GLDAS TIME SEMANTICS
+// =====================================================================
+
+/*
+ * This is one of the most important things
+ * to learn in Phase 1C.
+ *
+ *
+ * -----------------------------------------------------
+ * _inst
+ * -----------------------------------------------------
+ *
+ * Instantaneous variable.
+ *
+ * Examples:
+ *
+ * SoilMoi0_10cm_inst
+ * SoilMoi10_40cm_inst
+ * RootMoist_inst
+ *
+ * These are STATES.
+ *
+ * For a daily representative state:
+ *
+ * 3-hourly snapshots
+ *       ↓
+ * daily MEAN
+ *
+ *
+ * -----------------------------------------------------
+ * _acc
+ * -----------------------------------------------------
+ *
+ * Accumulated amount over the PREVIOUS 3 hours.
+ *
+ * Examples:
+ *
+ * Qs_acc
+ * Qsb_acc
+ *
+ * Each image already contains the amount accumulated
+ * during its preceding 3-hour interval.
+ *
+ * Daily value:
+ *
+ * 8 interval amounts
+ *       ↓
+ * SUM
+ *
+ *
+ * -----------------------------------------------------
+ * _tavg
+ * -----------------------------------------------------
+ *
+ * Average RATE over the PREVIOUS 3 hours.
+ *
+ * Example:
+ *
+ * Evap_tavg
+ *
+ * Unit:
+ * kg/m²/s
+ *
+ * 1 kg/m² water ≈ 1 mm water depth
+ *
+ * One 3-hour interval:
+ *
+ * rate × 10800 seconds
+ *
+ * gives:
+ *
+ * mm per interval
+ *
+ * Then sum all intervals.
+ */
+
+
+// =====================================================================
+// 4. DAILY GLDAS BUILDER
+// =====================================================================
+
+function buildGLDASDailyFC(
+  startString,
+  endString
+) {
+
+  var startDate =
+    ee.Date(
+      startString
+    );
+
+  var endDate =
+    ee.Date(
+      endString
+    );
+
+
+  var numberOfDays =
+    endDate.difference(
+      startDate,
+      'day'
+    );
+
+
+  var dayOffsets =
+    ee.List.sequence(
+      0,
+      numberOfDays.subtract(1)
+    );
+
+
+  var dailyFeatures =
+    dayOffsets.map(
+      function(offset) {
+
+
+        var currentDay =
+          startDate.advance(
+            offset,
+            'day'
+          );
+
+
+        var nextDay =
+          currentDay.advance(
+            1,
+            'day'
+          );
+
+
+        // ==========================================================
+        // A. STATE WINDOW
+        // ==========================================================
+
+        /*
+         * Instantaneous variables:
+         *
+         * [D 00:00, D+1 00:00)
+         *
+         * Normally:
+         *
+         * 00, 03, 06, 09, 12, 15, 18, 21 UTC
+         *
+         * = 8 snapshots
+         *
+         * SPECIAL CASE:
+         *
+         * GLDAS-2.1 starts at 2000-01-01 03:00 UTC.
+         *
+         * Therefore 2000-01-01 has only 7 state snapshots.
+         *
+         * We do NOT invent a missing 00:00 value.
+         * We retain the available mean and QC flag it.
+         */
+
+
+        var stateSub =
+          gldasCol.filterDate(
+            currentDay,
+            nextDay
+          );
+
+
+        var stateCount =
+          stateSub.size();
+
+
+        // ==========================================================
+        // B. FLUX WINDOW
+        // ==========================================================
+
+        /*
+         * _acc / _tavg describe PREVIOUS 3 hours.
+         *
+         * Example:
+         *
+         * timestamp 03:00
+         *
+         * represents:
+         *
+         * 00:00–03:00
+         *
+         *
+         * Calendar-day D therefore needs timestamps:
+         *
+         * D 03:00
+         * D 06:00
+         * D 09:00
+         * D 12:00
+         * D 15:00
+         * D 18:00
+         * D 21:00
+         * D+1 00:00
+         *
+         *
+         * filterDate is end-exclusive.
+         *
+         * Therefore:
+         *
+         * [D+03h, D+1+03h)
+         *
+         * returns exactly those eight timestamps.
+         */
+
+
+        var fluxStart =
+          currentDay.advance(
+            3,
+            'hour'
+          );
+
+
+        var fluxEnd =
+          nextDay.advance(
+            3,
+            'hour'
+          );
+
+
+        var fluxSub =
+          gldasCol.filterDate(
+            fluxStart,
+            fluxEnd
+          );
+
+
+        var fluxCount =
+          fluxSub.size();
+
+
+        // ==========================================================
+        // C. SOIL-MOISTURE STATE VARIABLES
+        // ==========================================================
+
+        /*
+         * Unit:
+         *
+         * kg/m²
+         *
+         * For liquid water:
+         *
+         * 1 kg/m² ≈ 1 mm water depth
+         *
+         *
+         * These are storage states.
+         *
+         * Temporal operation:
+         *
+         * MEAN of instantaneous snapshots.
+         */
+
+
+        var sm0_10 =
+          stateSub
+            .select(
+              'SoilMoi0_10cm_inst'
+            )
+            .mean();
+
+
+        var sm10_40 =
+          stateSub
+            .select(
+              'SoilMoi10_40cm_inst'
+            )
+            .mean();
+
+
+        var sm40_100 =
+          stateSub
+            .select(
+              'SoilMoi40_100cm_inst'
+            )
+            .mean();
+
+
+        var sm100_200 =
+          stateSub
+            .select(
+              'SoilMoi100_200cm_inst'
+            )
+            .mean();
+
+
+        var rootMoist =
+          stateSub
+            .select(
+              'RootMoist_inst'
+            )
+            .mean();
+
+
+        // ==========================================================
+        // D. CUMULATIVE SOIL-MOISTURE STORAGE
+        // ==========================================================
+
+        /*
+         * Layer values represent water storage
+         * inside different physical depth layers.
+         *
+         * Therefore profile storage is obtained by SUMMING layers.
+         *
+         * Do NOT average the four layers.
+         */
+
+
+        var sm0_40 =
+          sm0_10.add(
+            sm10_40
+          );
+
+
+        var sm0_100 =
+          sm0_40.add(
+            sm40_100
+          );
+
+
+        var sm0_200 =
+          sm0_100.add(
+            sm100_200
+          );
+
+
+        // ==========================================================
+        // E. RUNOFF
+        // ==========================================================
+
+        /*
+         * Qs_acc:
+         *
+         * storm surface runoff
+         *
+         * kg/m² accumulated over previous 3 hours
+         *
+         *
+         * Qsb_acc:
+         *
+         * baseflow / groundwater runoff
+         *
+         * kg/m² accumulated over previous 3 hours
+         *
+         *
+         * Daily amount:
+         *
+         * SUM the eight interval accumulations.
+         */
+
+
+        var surfaceRunoff =
+          fluxSub
+            .select(
+              'Qs_acc'
+            )
+            .sum();
+
+
+        var baseflow =
+          fluxSub
+            .select(
+              'Qsb_acc'
+            )
+            .sum();
+
+
+        var totalRunoff =
+          surfaceRunoff.add(
+            baseflow
+          );
+
+
+        // ==========================================================
+        // F. EVAPOTRANSPIRATION
+        // ==========================================================
+
+        /*
+         * Evap_tavg:
+         *
+         * kg/m²/s
+         *
+         * mean rate over the previous 3 hours.
+         *
+         *
+         * 3 hours =
+         *
+         * 3 × 60 × 60
+         *
+         * = 10800 seconds
+         *
+         *
+         * Each interval:
+         *
+         * Evap_tavg × 10800
+         *
+         * -> kg/m²
+         *
+         * -> approximately mm water
+         *
+         *
+         * Then SUM all intervals.
+         */
+
+
+        var evapDaily =
+          fluxSub
+            .select(
+              'Evap_tavg'
+            )
+            .map(
+              function(img) {
+
+                return img.multiply(
+                  10800
+                );
+
+              }
+            )
+            .sum();
+
+
+        // ==========================================================
+        // G. COMBINE DAILY RASTERS
+        // ==========================================================
+
+        var dailyImage =
+          ee.Image.cat([
+
+            sm0_10.rename(
+              'sm0_10'
+            ),
+
+            sm10_40.rename(
+              'sm10_40'
+            ),
+
+            sm40_100.rename(
+              'sm40_100'
+            ),
+
+            sm100_200.rename(
+              'sm100_200'
+            ),
+
+            sm0_40.rename(
+              'sm0_40'
+            ),
+
+            sm0_100.rename(
+              'sm0_100'
+            ),
+
+            sm0_200.rename(
+              'sm0_200'
+            ),
+
+            rootMoist.rename(
+              'rootMoist'
+            ),
+
+            surfaceRunoff.rename(
+              'surfaceRunoff'
+            ),
+
+            baseflow.rename(
+              'baseflow'
+            ),
+
+            totalRunoff.rename(
+              'totalRunoff'
+            ),
+
+            evapDaily.rename(
+              'evapDaily'
+            )
+
+          ]);
+
+
+        // ==========================================================
+        // H. SPATIAL AGGREGATION
+        // ==========================================================
+
+        /*
+         * Everything above was temporal processing.
+         *
+         * Now:
+         *
+         * many GLDAS grid cells
+         *
+         *       ↓
+         *
+         * regional spatial mean
+         *
+         *       ↓
+         *
+         * one AEZ-26 value per variable
+         */
+
+
+        var stats =
+          dailyImage.reduceRegion({
+
+            reducer:
+              ee.Reducer.mean(),
+
+            geometry:
+              studyArea,
+
+            scale:
+              SCALE_GLDAS,
+
+            maxPixels:
+              1e9,
+
+            tileScale:
+              2
+
+          });
+
+
+        // ==========================================================
+        // I. ONE DAY -> ONE FEATURE / CSV ROW
+        // ==========================================================
+
+        return ee.Feature(
+          null,
+          {
+
+            date:
+              currentDay.format(
+                'YYYY-MM-dd'
+              ),
+
+
+            // -----------------------------------------
+            // QC metadata
+            // -----------------------------------------
+
+            number_of_subdaily_state_images_used:
+              stateCount,
+
+            number_of_subdaily_flux_images_used:
+              fluxCount,
+
+            state_complete_flag:
+              stateCount.eq(
+                8
+              ),
+
+            flux_complete_flag:
+              fluxCount.eq(
+                8
+              ),
+
+            complete_day_flag:
+              stateCount
+                .eq(8)
+                .and(
+                  fluxCount.eq(8)
+                ),
+
+
+            // -----------------------------------------
+            // Layer soil moisture
+            // -----------------------------------------
+
+            SM_0_10cm_mm:
+              stats.get(
+                'sm0_10'
+              ),
+
+            SM_10_40cm_mm:
+              stats.get(
+                'sm10_40'
+              ),
+
+            SM_40_100cm_mm:
+              stats.get(
+                'sm40_100'
+              ),
+
+            SM_100_200cm_mm:
+              stats.get(
+                'sm100_200'
+              ),
+
+
+            // -----------------------------------------
+            // Cumulative profile storage
+            // -----------------------------------------
+
+            SM_0_40cm_mm:
+              stats.get(
+                'sm0_40'
+              ),
+
+            SM_0_100cm_mm:
+              stats.get(
+                'sm0_100'
+              ),
+
+            SM_0_200cm_mm:
+              stats.get(
+                'sm0_200'
+              ),
+
+
+            // -----------------------------------------
+            // Root-zone moisture
+            // -----------------------------------------
+
+            RootMoist_mm:
+              stats.get(
+                'rootMoist'
+              ),
+
+
+            // -----------------------------------------
+            // Runoff
+            // -----------------------------------------
+
+            surface_runoff_mm_day:
+              stats.get(
+                'surfaceRunoff'
+              ),
+
+            baseflow_subsurface_mm_day:
+              stats.get(
+                'baseflow'
+              ),
+
+            total_runoff_mm_day:
+              stats.get(
+                'totalRunoff'
+              ),
+
+
+            // -----------------------------------------
+            // ET
+            // -----------------------------------------
+
+            GLDAS_ET_mm_day:
+              stats.get(
+                'evapDaily'
+              )
+
+          }
+        );
+
+      }
+    );
+
+
+  return ee.FeatureCollection(
+    dailyFeatures
+  );
+
+}
+
+
+// =====================================================================
+// 5. ONE-DAY LEARNING / VALIDATION TEST
+// =====================================================================
+
+/*
+ * We previously tested this same date.
+ *
+ * Expected:
+ *
+ * state count = 8
+ * flux count  = 8
+ *
+ * Approx previous result:
+ *
+ * SM 0–10 cm  ≈ 32.11 mm
+ * SM 0–40 cm  ≈ 130.92 mm
+ * SM 0–100 cm ≈ 339.22 mm
+ * SM 0–200 cm ≈ 724.16 mm
+ *
+ * RootMoist ≈ 338.77 mm
+ *
+ * surface runoff ≈ 8.57 mm/day
+ * baseflow       ≈ 4.87 mm/day
+ * total runoff   ≈ 13.44 mm/day
+ *
+ * ET ≈ 4.79 mm/day
+ */
+
+
+var oneDayTest =
+  buildGLDASDailyFC(
+    '2020-07-01',
+    '2020-07-02'
+  );
+
+
+print('=====================================================');
+print('ONE-DAY GLDAS TEST');
+print('=====================================================');
+
+
+print(
+  '2020-07-01 TEST ROW:',
+  ee.Feature(
+    oneDayTest.first()
+  ).toDictionary()
+);
+
+
+// =====================================================================
+// 6. FIRST-DAY EDGE-CASE TEST
+// =====================================================================
+
+/*
+ * GLDAS-2.1 source starts:
+ *
+ * 2000-01-01 03:00 UTC
+ *
+ * Therefore on:
+ *
+ * 2000-01-01
+ *
+ * state count is expected to be 7.
+ *
+ * This is NOT silently filled.
+ *
+ * The available state mean is retained
+ * and complete_day_flag will be false.
+ */
+
+
+var firstDayTest =
+  buildGLDASDailyFC(
+    '2000-01-01',
+    '2000-01-02'
+  );
+
+
+print(
+  '2000-01-01 EDGE-CASE ROW:',
+  ee.Feature(
+    firstDayTest.first()
+  ).toDictionary()
+);
+
+
+// =====================================================================
+// 7. MEMORY-SAFE EXPORT CHUNKS
+// =====================================================================
+
+var chunks = [
+
+  {
+    label:
+      '2000_2004',
+
+    start:
+      '2000-01-01',
+
+    end:
+      '2005-01-01'
+  },
+
+
+  {
+    label:
+      '2005_2009',
+
+    start:
+      '2005-01-01',
+
+    end:
+      '2010-01-01'
+  },
+
+
+  {
+    label:
+      '2010_2014',
+
+    start:
+      '2010-01-01',
+
+    end:
+      '2015-01-01'
+  },
+
+
+  {
+    label:
+      '2015_2019',
+
+    start:
+      '2015-01-01',
+
+    end:
+      '2020-01-01'
+  },
+
+
+  {
+    label:
+      '2020_2025',
+
+    start:
+      '2020-01-01',
+
+    end:
+      '2026-01-01'
+  }
+
+];
+
+
+// =====================================================================
+// 8. EXPORT COLUMNS
+// =====================================================================
+
+var selectors = [
+
+  'date',
+
+  'number_of_subdaily_state_images_used',
+
+  'number_of_subdaily_flux_images_used',
+
+  'state_complete_flag',
+
+  'flux_complete_flag',
+
+  'complete_day_flag',
+
+  'SM_0_10cm_mm',
+
+  'SM_10_40cm_mm',
+
+  'SM_40_100cm_mm',
+
+  'SM_100_200cm_mm',
+
+  'SM_0_40cm_mm',
+
+  'SM_0_100cm_mm',
+
+  'SM_0_200cm_mm',
+
+  'RootMoist_mm',
+
+  'surface_runoff_mm_day',
+
+  'baseflow_subsurface_mm_day',
+
+  'total_runoff_mm_day',
+
+  'GLDAS_ET_mm_day'
+
+];
+
+
+// =====================================================================
+// 9. CREATE EXPORT TASKS
+// =====================================================================
+
+chunks.forEach(
+  function(chunk) {
+
+
+    var chunkFC =
+      buildGLDASDailyFC(
+        chunk.start,
+        chunk.end
+      );
+
+
+    print(
+      'Chunk ' +
+      chunk.label +
+      ' expected row count:',
+
+      ee.Date(
+        chunk.end
+      )
+        .difference(
+          ee.Date(
+            chunk.start
+          ),
+          'day'
+        )
+    );
+
+
+    Export.table.toDrive({
+
+      collection:
+        chunkFC,
+
+      description:
+        'AEZ26_GLDAS_Daily_' +
+        chunk.label,
+
+      folder:
+        DRIVE_FOLDER,
+
+      fileNamePrefix:
+        'AEZ26_GLDAS_Daily_' +
+        chunk.label,
+
+      fileFormat:
+        'CSV',
+
+      selectors:
+        selectors
+
+    });
+
+  }
+);
+
+
+// =====================================================================
+// 10. MAP LEARNING LAYER
+// =====================================================================
+
+var testState =
+  gldasCol.filterDate(
+    '2020-07-01',
+    '2020-07-02'
+  );
+
+
+var testDailySM =
+  testState
+    .select(
+      'SoilMoi0_10cm_inst'
+    )
+    .mean();
+
+
+Map.addLayer(
+
+  testDailySM.clip(
+    studyArea
+  ),
+
+  {
+    min:
+      10,
+
+    max:
+      50,
+
+    palette: [
+      'brown',
+      'yellow',
+      'green'
+    ]
+  },
+
+  'GLDAS Daily Mean 0–10 cm Soil Moisture'
+
+);
+
+
+// =====================================================================
+// 11. FINAL MESSAGE
+// =====================================================================
+
+print('=====================================================');
+
+print(
+  'PHASE 1C SCRIPT INITIALIZED'
+);
+
+print(
+  'Check 2020-07-01 TEST ROW.'
+);
+
+print(
+  'Expected state count = 8 and flux count = 8.'
+);
+
+print(
+  'Also inspect the 2000-01-01 edge-case row.'
+);
+
+print(
+  'Expected 2000-01-01 state count = 7 because the dataset starts at 03:00 UTC.'
+);
+
+print(
+  'If there is no red error, RUN only the first task: AEZ26_GLDAS_Daily_2000_2004.'
+);
+
+print('=====================================================');

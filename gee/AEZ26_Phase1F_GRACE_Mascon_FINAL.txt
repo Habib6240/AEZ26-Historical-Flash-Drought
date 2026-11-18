@@ -1,0 +1,846 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1F
+ * GRACE / GRACE-FO JPL MASCON TWSA + UNCERTAINTY
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Dataset:
+ * NASA/GRACE/MASS_GRIDS_V04/MASCON_CRI
+ *
+ * IMPORTANT SCIENTIFIC RULES:
+ *
+ * 1. Preserve native GRACE observation timing.
+ * 2. Do NOT interpolate missing months in GEE.
+ * 3. Do NOT convert TWSA directly to groundwater.
+ * 4. lwe_thickness = terrestrial water-storage anomaly
+ *    in cm equivalent water thickness.
+ * 5. uncertainty = provider 1-sigma mascon uncertainty.
+ * 6. Regional mean uncertainty is NOT formal propagated
+ *    uncertainty of the AEZ regional mean.
+ * 7. 0.5-degree display/sampling grid does NOT mean
+ *    independent 0.5-degree observations.
+ *    Independent mascon information is much coarser (~3 degrees).
+ *
+ * OUTPUT:
+ * AEZ26_GRACE_Mascon_TWSA_Uncertainty.csv
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+var START_DATE =
+  '2000-01-01';
+
+var END_DATE =
+  '2026-01-01';
+
+
+// Earth Engine catalog pixel size ~55.66 km.
+var SCALE_GRACE =
+  55660;
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+var studyArea =
+  studyAreaFC.geometry();
+
+var studyAreaKm2 =
+  studyArea
+    .area({
+      maxError: 1
+    })
+    .divide(1e6);
+
+
+print('=====================================================');
+print('PHASE 1F — GRACE / GRACE-FO JPL MASCON');
+print('=====================================================');
+
+print(
+  'Study Area:',
+  studyAreaFC
+);
+
+print(
+  'Feature count:',
+  studyAreaFC.size()
+);
+
+print(
+  'AEZ-26 vector area (km²):',
+  studyAreaKm2
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  8
+);
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. LOAD GRACE / GRACE-FO
+// =====================================================================
+
+var grace =
+  ee.ImageCollection(
+    'NASA/GRACE/MASS_GRIDS_V04/MASCON_CRI'
+  )
+    .filterDate(
+      START_DATE,
+      END_DATE
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+print(
+  'GRACE observation count:',
+  grace.size()
+);
+
+print(
+  'First GRACE source image:',
+  grace.first()
+);
+
+print(
+  'Last GRACE source image:',
+  grace
+    .sort(
+      'system:time_start',
+      false
+    )
+    .first()
+);
+
+
+/*
+ * Previous diagnostic:
+ *
+ * expected approximately 238 observations.
+ *
+ * IMPORTANT:
+ *
+ * GRACE is not a regular monthly time series.
+ *
+ * There are mission gaps and irregular
+ * native observation intervals.
+ *
+ * We preserve them.
+ */
+
+
+// =====================================================================
+// 3. CHECK SOURCE PROPERTIES
+// =====================================================================
+
+var firstSourceImage =
+  ee.Image(
+    grace.first()
+  );
+
+
+print(
+  'First GRACE image property names:',
+  firstSourceImage.propertyNames()
+);
+
+print(
+  'First GRACE native system:index:',
+  firstSourceImage.get(
+    'system:index'
+  )
+);
+
+print(
+  'First GRACE system:time_start:',
+  firstSourceImage.get(
+    'system:time_start'
+  )
+);
+
+
+/*
+ * Only use system:time_end if it actually exists.
+ */
+
+var firstHasTimeEnd =
+  firstSourceImage
+    .propertyNames()
+    .contains(
+      'system:time_end'
+    );
+
+
+print(
+  'Does first GRACE image contain system:time_end?',
+  firstHasTimeEnd
+);
+
+
+// =====================================================================
+// 4. PROCESS ONE NATIVE GRACE OBSERVATION
+// =====================================================================
+
+function processGRACE(
+  image
+) {
+
+
+  // ===================================================================
+  // 4A. NATIVE TRACEABILITY
+  // ===================================================================
+
+  var nativeIndex =
+    image.get(
+      'system:index'
+    );
+
+
+  var nativeTimestampMillis =
+    image.get(
+      'system:time_start'
+    );
+
+
+  var nativeDate =
+    image
+      .date()
+      .format(
+        'YYYY-MM-dd'
+      );
+
+
+  var nativeTimestampUTC =
+    image
+      .date()
+      .format(
+        'YYYY-MM-dd HH:mm:ss'
+      );
+
+
+  /*
+   * Optional native end date.
+   *
+   * We check whether the property exists.
+   * If absent, result remains null.
+   */
+
+  var hasTimeEnd =
+    image
+      .propertyNames()
+      .contains(
+        'system:time_end'
+      );
+
+
+  var nativeEndDate =
+    ee.Algorithms.If(
+
+      hasTimeEnd,
+
+      ee.Date(
+        image.get(
+          'system:time_end'
+        )
+      ).format(
+        'YYYY-MM-dd'
+      ),
+
+      null
+
+    );
+
+
+  // ===================================================================
+  // 4B. SOURCE BANDS
+  // ===================================================================
+
+  /*
+   * lwe_thickness:
+   *
+   * equivalent liquid-water thickness
+   *
+   * unit:
+   * cm
+   *
+   * Interpretation:
+   * terrestrial water-storage anomaly
+   *
+   * NOT groundwater alone.
+   */
+
+
+  var twsa =
+    image.select(
+      'lwe_thickness'
+    );
+
+
+  /*
+   * uncertainty:
+   *
+   * provider 1-sigma uncertainty
+   * associated with mascon estimate.
+   */
+
+  var uncertainty =
+    image.select(
+      'uncertainty'
+    );
+
+
+  // ===================================================================
+  // 4C. REGIONAL SPATIAL MEANS
+  // ===================================================================
+
+  /*
+   * We calculate AEZ-level raster-grid spatial means.
+   *
+   * IMPORTANT:
+   *
+   * Adjacent ~0.5-degree output pixels are NOT
+   * independent mascon observations.
+   */
+
+
+  var twsaStats =
+    twsa.reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_GRACE,
+
+      maxPixels:
+        1e9
+
+    });
+
+
+  var uncertaintyStats =
+    uncertainty.reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_GRACE,
+
+      maxPixels:
+        1e9
+
+    });
+
+
+  var twsaValue =
+    twsaStats.get(
+      'lwe_thickness'
+    );
+
+
+  var uncertaintyValue =
+    uncertaintyStats.get(
+      'uncertainty'
+    );
+
+
+  // ===================================================================
+  // 4D. DATA AVAILABILITY
+  // ===================================================================
+
+  var dataAvailable =
+    ee.Number(
+      ee.Algorithms.If(
+
+        ee.Algorithms.IsEqual(
+          twsaValue,
+          null
+        ),
+
+        0,
+
+        1
+
+      )
+    );
+
+
+  // ===================================================================
+  // 4E. ONE NATIVE OBSERVATION -> ONE CSV ROW
+  // ===================================================================
+
+  return ee.Feature(
+    null,
+    {
+
+      native_system_index:
+        nativeIndex,
+
+      native_timestamp_millis:
+        nativeTimestampMillis,
+
+      native_timestamp_UTC:
+        nativeTimestampUTC,
+
+      native_date:
+        nativeDate,
+
+      native_end_date_if_available:
+        nativeEndDate,
+
+
+      /*
+       * Main research variable.
+       */
+
+      TWSA_cm:
+        twsaValue,
+
+
+      /*
+       * IMPORTANT NAME:
+       *
+       * This is the spatial mean of provider
+       * mascon uncertainty values over AEZ-26.
+       *
+       * It is NOT a formal propagated uncertainty
+       * of the regional mean TWSA.
+       */
+
+      mean_mascon_uncertainty_cm:
+        uncertaintyValue,
+
+
+      TWSA_data_available_flag:
+        dataAvailable
+
+    }
+  );
+
+}
+
+
+// =====================================================================
+// 5. BUILD FINAL TABLE
+// =====================================================================
+
+var graceFC =
+  ee.FeatureCollection(
+
+    grace.map(
+      processGRACE
+    )
+
+  );
+
+
+print('=====================================================');
+print('FINAL GRACE TABLE');
+print('=====================================================');
+
+print(
+  'Final GRACE output row count:',
+  graceFC.size()
+);
+
+print(
+  'First output Feature:',
+  graceFC.first()
+);
+
+
+// =====================================================================
+// 6. EXPLICIT FIRST OBSERVATION VALIDATION
+// =====================================================================
+
+var firstFeature =
+  ee.Feature(
+    graceFC
+      .sort(
+        'native_timestamp_millis',
+        true
+      )
+      .first()
+  );
+
+
+print('=====================================================');
+print('FIRST OBSERVATION VALIDATION');
+print('=====================================================');
+
+print(
+  'First native index:',
+  firstFeature.get(
+    'native_system_index'
+  )
+);
+
+print(
+  'First native date:',
+  firstFeature.get(
+    'native_date'
+  )
+);
+
+print(
+  'First native end date if available:',
+  firstFeature.get(
+    'native_end_date_if_available'
+  )
+);
+
+print(
+  'First TWSA (cm):',
+  firstFeature.get(
+    'TWSA_cm'
+  )
+);
+
+print(
+  'First mean mascon uncertainty (cm):',
+  firstFeature.get(
+    'mean_mascon_uncertainty_cm'
+  )
+);
+
+
+// =====================================================================
+// 7. 2020 VALIDATION
+// =====================================================================
+
+/*
+ * Previous diagnostic gave approximately:
+ *
+ * native date = 2020-01-31
+ * TWSA       ≈ -12.54 cm
+ * uncertainty ≈ 3.79 cm
+ */
+
+
+var validation2020 =
+  ee.Feature(
+
+    graceFC
+      .filter(
+        ee.Filter.calendarRange(
+          2020,
+          2020,
+          'year'
+        )
+      )
+      .sort(
+        'native_timestamp_millis',
+        true
+      )
+      .first()
+
+  );
+
+
+print('=====================================================');
+print('2020 VALIDATION');
+print('=====================================================');
+
+print(
+  '2020 first native date:',
+  validation2020.get(
+    'native_date'
+  )
+);
+
+print(
+  '2020 TWSA (cm):',
+  validation2020.get(
+    'TWSA_cm'
+  )
+);
+
+print(
+  '2020 mean mascon uncertainty (cm):',
+  validation2020.get(
+    'mean_mascon_uncertainty_cm'
+  )
+);
+
+
+// =====================================================================
+// 8. LAST OBSERVATION VALIDATION
+// =====================================================================
+
+var lastFeature =
+  ee.Feature(
+    graceFC
+      .sort(
+        'native_timestamp_millis',
+        false
+      )
+      .first()
+  );
+
+
+print('=====================================================');
+print('LAST OBSERVATION VALIDATION');
+print('=====================================================');
+
+print(
+  'Last native index:',
+  lastFeature.get(
+    'native_system_index'
+  )
+);
+
+print(
+  'Last native date:',
+  lastFeature.get(
+    'native_date'
+  )
+);
+
+print(
+  'Last native end date if available:',
+  lastFeature.get(
+    'native_end_date_if_available'
+  )
+);
+
+print(
+  'Last TWSA (cm):',
+  lastFeature.get(
+    'TWSA_cm'
+  )
+);
+
+
+// =====================================================================
+// 9. COLLECTION-LEVEL QC
+// =====================================================================
+
+print('=====================================================');
+print('GRACE COLLECTION QC');
+print('=====================================================');
+
+
+var noDataRows =
+  graceFC.filter(
+    ee.Filter.eq(
+      'TWSA_data_available_flag',
+      0
+    )
+  );
+
+
+print(
+  'Rows with missing regional TWSA:',
+  noDataRows.size()
+);
+
+
+print(
+  'Minimum regional TWSA (cm):',
+  graceFC.aggregate_min(
+    'TWSA_cm'
+  )
+);
+
+
+print(
+  'Maximum regional TWSA (cm):',
+  graceFC.aggregate_max(
+    'TWSA_cm'
+  )
+);
+
+
+print(
+  'Mean regional TWSA (cm):',
+  graceFC.aggregate_mean(
+    'TWSA_cm'
+  )
+);
+
+
+print(
+  'Minimum mean mascon uncertainty (cm):',
+  graceFC.aggregate_min(
+    'mean_mascon_uncertainty_cm'
+  )
+);
+
+
+print(
+  'Maximum mean mascon uncertainty (cm):',
+  graceFC.aggregate_max(
+    'mean_mascon_uncertainty_cm'
+  )
+);
+
+
+// =====================================================================
+// 10. MAP VISUALIZATION
+// =====================================================================
+
+var graceMapImage =
+  ee.Image(
+
+    grace
+      .filterDate(
+        '2020-01-01',
+        '2020-12-31'
+      )
+      .first()
+
+  )
+    .select(
+      'lwe_thickness'
+    );
+
+
+Map.addLayer(
+
+  graceMapImage,
+
+  {
+    min: -25,
+    max: 25,
+
+    palette: [
+      'darkred',
+      'orange',
+      'white',
+      'lightblue',
+      'darkblue'
+    ]
+  },
+
+  'GRACE TWSA — first 2020 observation',
+
+  false
+
+);
+
+
+// =====================================================================
+// 11. FINAL EXPORT
+// =====================================================================
+
+Export.table.toDrive({
+
+  collection:
+    graceFC,
+
+  description:
+    'AEZ26_GRACE_Mascon_TWSA_Uncertainty',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_GRACE_Mascon_TWSA_Uncertainty',
+
+  fileFormat:
+    'CSV',
+
+  selectors: [
+
+    'native_system_index',
+
+    'native_timestamp_millis',
+
+    'native_timestamp_UTC',
+
+    'native_date',
+
+    'native_end_date_if_available',
+
+    'TWSA_cm',
+
+    'mean_mascon_uncertainty_cm',
+
+    'TWSA_data_available_flag'
+
+  ]
+
+});
+
+
+// =====================================================================
+// 12. FINAL MESSAGE
+// =====================================================================
+
+print('=====================================================');
+print('PHASE 1F SCRIPT READY');
+print('=====================================================');
+
+print(
+  'Expected observations:',
+  'approximately 238'
+);
+
+print(
+  'GRACE native irregular timing has been preserved.'
+);
+
+print(
+  'No missing month has been interpolated.'
+);
+
+print(
+  'TWSA has NOT been relabeled as groundwater.'
+);
+
+print(
+  '0.5-degree output pixels are NOT independent 0.5-degree mascons.'
+);
+
+print(
+  'The uncertainty column is NOT formal propagated uncertainty of the regional TWSA mean.'
+);
+
+print(
+  'Source currently ends before the end of 2025; no artificial 2025 GRACE data will be created.'
+);
+
+print(
+  'If there is no red error, RUN the single GRACE export task.'
+);
+
+print('=====================================================');

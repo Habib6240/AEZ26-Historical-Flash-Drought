@@ -1,0 +1,1259 @@
+/**
+ * =====================================================================
+ * AEZ-26 PHASE 1E
+ * MOD13Q1 NDVI / EVI — FINAL RESEARCH EXPORT
+ *
+ * Study Area:
+ * High Barind Tract, AEZ-26, Bangladesh
+ *
+ * Study period:
+ * 2000-01-01 to 2025-12-31
+ *
+ * Dataset:
+ * MODIS/061/MOD13Q1
+ *
+ * Native temporal resolution:
+ * 16-day vegetation-index composite
+ *
+ * Spatial resolution:
+ * 250 m
+ *
+ * FINAL DESIGN:
+ *
+ * A. ALL-VALID TRACK
+ *    - physically valid NDVI/EVI source pixels
+ *    - diagnostic/reference only
+ *
+ * B. STANDARD-QA TRACK
+ *    - SummaryQA = 0 or 1
+ *    - main vegetation-series candidate
+ *
+ * C. STRICT-QA TRACK
+ *    - strong DetailedQA filtering
+ *    - sensitivity / high-confidence track
+ *
+ * IMPORTANT:
+ * - No interpolation to daily values in GEE.
+ * - Missing QA observations remain null.
+ * - Low spatial coverage is retained and quantified.
+ * - Extreme NDVI/EVI values are not automatically deleted.
+ *
+ * OUTPUT:
+ * AEZ26_MODIS_NDVI_EVI_QC_2000_2025.csv
+ * =====================================================================
+ */
+
+
+// =====================================================================
+// 0. CONFIGURATION
+// =====================================================================
+
+var STUDY_AREA_ASSET =
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+
+var DRIVE_FOLDER =
+  'AEZ26_Final_Research_Data';
+
+var START_DATE =
+  '2000-01-01';
+
+var END_DATE =
+  '2026-01-01';   // exclusive
+
+var SCALE_MOD13 =
+  250;
+
+
+// =====================================================================
+// 1. STUDY AREA
+// =====================================================================
+
+var studyAreaFC =
+  ee.FeatureCollection(
+    STUDY_AREA_ASSET
+  );
+
+var studyArea =
+  studyAreaFC.geometry();
+
+var studyAreaKm2 =
+  studyArea
+    .area({
+      maxError: 1
+    })
+    .divide(1e6);
+
+
+print('=====================================================');
+print('PHASE 1E — MOD13Q1 NDVI/EVI');
+print('=====================================================');
+
+print(
+  'Study Area:',
+  studyAreaFC
+);
+
+print(
+  'Feature count:',
+  studyAreaFC.size()
+);
+
+print(
+  'AEZ-26 vector area (km²):',
+  studyAreaKm2
+);
+
+
+Map.centerObject(
+  studyAreaFC,
+  10
+);
+
+Map.addLayer(
+  studyAreaFC.style({
+    color: 'red',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'AEZ-26 Boundary'
+);
+
+
+// =====================================================================
+// 2. LOAD MOD13Q1
+// =====================================================================
+
+var mod13 =
+  ee.ImageCollection(
+    'MODIS/061/MOD13Q1'
+  )
+    .filterDate(
+      START_DATE,
+      END_DATE
+    )
+    .filterBounds(
+      studyArea
+    );
+
+
+print(
+  'MOD13Q1 source composite count:',
+  mod13.size()
+);
+
+print(
+  'First MOD13Q1 source image:',
+  mod13.first()
+);
+
+print(
+  'Last MOD13Q1 source image:',
+  mod13
+    .sort(
+      'system:time_start',
+      false
+    )
+    .first()
+);
+
+
+/*
+ * Previous diagnostic result:
+ *
+ * expected count ≈ 595 composites.
+ */
+
+
+// =====================================================================
+// 3. QA BIT EXTRACTION HELPER
+// =====================================================================
+
+function extractBits(
+  image,
+  startBit,
+  endBit
+) {
+
+  var bitMask = 0;
+
+  for (
+    var i = startBit;
+    i <= endBit;
+    i++
+  ) {
+
+    bitMask += Math.pow(
+      2,
+      i
+    );
+
+  }
+
+  return image
+    .bitwiseAnd(
+      bitMask
+    )
+    .rightShift(
+      startBit
+    );
+}
+
+
+// =====================================================================
+// 4. COVERAGE FRACTION HELPER
+// =====================================================================
+
+/*
+ * A binary condition image:
+ *
+ * true  = 1
+ * false = 0
+ *
+ * Masked locations are explicitly converted
+ * to zero for spatial-coverage calculation.
+ */
+
+function fractionOverRegion(
+  conditionImage
+) {
+
+  var binary =
+    conditionImage
+      .unmask(0)
+      .rename(
+        'fraction'
+      );
+
+
+  var result =
+    binary.reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_MOD13,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        4
+
+    });
+
+
+  return ee.Number(
+    result.get(
+      'fraction'
+    )
+  );
+}
+
+
+// =====================================================================
+// 5. PROCESS ONE MOD13Q1 COMPOSITE
+// =====================================================================
+
+function processMOD13(
+  image
+) {
+
+
+  // ===================================================================
+  // 5A. DATE / TRACEABILITY
+  // ===================================================================
+
+  var compositeDate =
+    image.date();
+
+
+  var nativeIndex =
+    image.get(
+      'system:index'
+    );
+
+
+  // ===================================================================
+  // 5B. SOURCE BANDS
+  // ===================================================================
+
+  var rawNDVI =
+    image.select(
+      'NDVI'
+    );
+
+  var rawEVI =
+    image.select(
+      'EVI'
+    );
+
+  var summaryQA =
+    image.select(
+      'SummaryQA'
+    );
+
+  var detailedQA =
+    image.select(
+      'DetailedQA'
+    );
+
+
+  // ===================================================================
+  // 5C. VALID SOURCE RANGE
+  // ===================================================================
+
+  /*
+   * MOD13Q1 NDVI/EVI stored valid range:
+   *
+   * -2000 to 10000
+   *
+   * Scale:
+   * × 0.0001
+   *
+   * physically represented output:
+   * approximately -0.2 to 1.0
+   */
+
+
+  var sourceMask =
+    rawNDVI
+      .mask()
+      .and(
+        rawEVI.mask()
+      );
+
+
+  var rangeMask =
+    rawNDVI
+      .gte(-2000)
+      .and(
+        rawNDVI.lte(10000)
+      )
+      .and(
+        rawEVI.gte(-2000)
+      )
+      .and(
+        rawEVI.lte(10000)
+      );
+
+
+  var allValidMask =
+    sourceMask.and(
+      rangeMask
+    );
+
+
+  // ===================================================================
+  // 5D. SCALE VEGETATION INDICES
+  // ===================================================================
+
+  var NDVIscaled =
+    rawNDVI
+      .multiply(
+        0.0001
+      )
+      .rename(
+        'NDVI'
+      );
+
+
+  var EVIscaled =
+    rawEVI
+      .multiply(
+        0.0001
+      )
+      .rename(
+        'EVI'
+      );
+
+
+  // ===================================================================
+  // 5E. ALL-VALID DIAGNOSTIC TRACK
+  // ===================================================================
+
+  /*
+   * This track does NOT impose vegetation QA.
+   *
+   * It is retained only to understand
+   * source availability and QA sensitivity.
+   */
+
+
+  var NDVIallValid =
+    NDVIscaled
+      .updateMask(
+        allValidMask
+      )
+      .rename(
+        'NDVI_all'
+      );
+
+
+  var EVIallValid =
+    EVIscaled
+      .updateMask(
+        allValidMask
+      )
+      .rename(
+        'EVI_all'
+      );
+
+
+  // ===================================================================
+  // 5F. STANDARD QA
+  // ===================================================================
+
+  /*
+   * SummaryQA:
+   *
+   * 0 = Good data; use with confidence
+   * 1 = Marginal data; useful but inspect other QA
+   * 2 = Snow / ice
+   * 3 = Cloudy
+   *
+   *
+   * STANDARD track:
+   *
+   * SummaryQA <= 1
+   *
+   * This is our main vegetation-series candidate.
+   */
+
+
+  var standardMask =
+    allValidMask
+      .and(
+        summaryQA.lte(1)
+      );
+
+
+  var NDVIstandard =
+    NDVIscaled
+      .updateMask(
+        standardMask
+      )
+      .rename(
+        'NDVI_standard'
+      );
+
+
+  var EVIstandard =
+    EVIscaled
+      .updateMask(
+        standardMask
+      )
+      .rename(
+        'EVI_standard'
+      );
+
+
+  // ===================================================================
+  // 5G. DECODE DETAILED QA
+  // ===================================================================
+
+  /*
+   * Bits 0–1:
+   * VI quality / MODLAND QA
+   *
+   * 0 = VI produced with good quality
+   * 1 = VI produced; check other QA
+   * 2 = probably cloudy
+   * 3 = not produced for other reasons
+   */
+
+  var viQuality =
+    extractBits(
+      detailedQA,
+      0,
+      1
+    );
+
+
+  /*
+   * Bits 2–5:
+   * VI usefulness.
+   *
+   * Official useful/decreasing-quality codes include:
+   *
+   * 0, 1, 2, 4, 8, 9, 10
+   *
+   * We exclude:
+   *
+   * 12 = lowest quality
+   * 13 = too poor to be useful
+   * 14 = faulty L1B
+   * 15 = not useful / not processed
+   */
+
+
+  var usefulness =
+    extractBits(
+      detailedQA,
+      2,
+      5
+    );
+
+
+  var usefulnessAccepted =
+    usefulness.eq(0)
+
+      .or(
+        usefulness.eq(1)
+      )
+
+      .or(
+        usefulness.eq(2)
+      )
+
+      .or(
+        usefulness.eq(4)
+      )
+
+      .or(
+        usefulness.eq(8)
+      )
+
+      .or(
+        usefulness.eq(9)
+      )
+
+      .or(
+        usefulness.eq(10)
+      );
+
+
+  /*
+   * Bits 6–7:
+   * Aerosol quantity
+   *
+   * 0 climatology
+   * 1 low
+   * 2 intermediate
+   * 3 high
+   *
+   * Strict track excludes high aerosol.
+   */
+
+  var aerosol =
+    extractBits(
+      detailedQA,
+      6,
+      7
+    );
+
+
+  /*
+   * Bit 8:
+   * Adjacent cloud detected.
+   */
+
+  var adjacentCloud =
+    extractBits(
+      detailedQA,
+      8,
+      8
+    );
+
+
+  /*
+   * Bit 10:
+   * Mixed cloud.
+   */
+
+  var mixedCloud =
+    extractBits(
+      detailedQA,
+      10,
+      10
+    );
+
+
+  /*
+   * Bits 11–13:
+   * Land/water.
+   *
+   * 1 = land.
+   */
+
+  var landWater =
+    extractBits(
+      detailedQA,
+      11,
+      13
+    );
+
+
+  /*
+   * Bit 14:
+   * Possible snow/ice.
+   */
+
+  var snowIce =
+    extractBits(
+      detailedQA,
+      14,
+      14
+    );
+
+
+  /*
+   * Bit 15:
+   * Possible shadow.
+   */
+
+  var shadow =
+    extractBits(
+      detailedQA,
+      15,
+      15
+    );
+
+
+  // ===================================================================
+  // 5H. STRICT QA TRACK
+  // ===================================================================
+
+  /*
+   * Deliberately high-confidence sensitivity track.
+   *
+   * Requirements:
+   *
+   * - passes STANDARD QA
+   * - VI quality = 0
+   * - acceptable usefulness
+   * - aerosol <= 2
+   * - no adjacent cloud
+   * - no mixed cloud
+   * - land only
+   * - no snow/ice
+   * - no shadow
+   */
+
+
+  var strictMask =
+    standardMask
+
+      .and(
+        viQuality.eq(0)
+      )
+
+      .and(
+        usefulnessAccepted
+      )
+
+      .and(
+        aerosol.lte(2)
+      )
+
+      .and(
+        adjacentCloud.eq(0)
+      )
+
+      .and(
+        mixedCloud.eq(0)
+      )
+
+      .and(
+        landWater.eq(1)
+      )
+
+      .and(
+        snowIce.eq(0)
+      )
+
+      .and(
+        shadow.eq(0)
+      );
+
+
+  var NDVIstrict =
+    NDVIscaled
+      .updateMask(
+        strictMask
+      )
+      .rename(
+        'NDVI_strict'
+      );
+
+
+  var EVIstrict =
+    EVIscaled
+      .updateMask(
+        strictMask
+      )
+      .rename(
+        'EVI_strict'
+      );
+
+
+  // ===================================================================
+  // 5I. REGIONAL SPATIAL MEANS
+  // ===================================================================
+
+  /*
+   * One reduceRegion call calculates:
+   *
+   * all-valid
+   * standard-QA
+   * strict-QA
+   *
+   * regional means.
+   */
+
+
+  var stats =
+    ee.Image.cat([
+
+      NDVIallValid,
+
+      EVIallValid,
+
+      NDVIstandard,
+
+      EVIstandard,
+
+      NDVIstrict,
+
+      EVIstrict
+
+    ]).reduceRegion({
+
+      reducer:
+        ee.Reducer.mean(),
+
+      geometry:
+        studyArea,
+
+      scale:
+        SCALE_MOD13,
+
+      maxPixels:
+        1e9,
+
+      tileScale:
+        4
+
+    });
+
+
+  // ===================================================================
+  // 5J. COVERAGE FRACTIONS
+  // ===================================================================
+
+  var allValidFraction =
+    fractionOverRegion(
+      allValidMask
+    );
+
+
+  var standardFraction =
+    fractionOverRegion(
+      standardMask
+    );
+
+
+  var strictFraction =
+    fractionOverRegion(
+      strictMask
+    );
+
+
+  /*
+   * Additional SummaryQA diagnostics.
+   */
+
+  var summaryGoodFraction =
+    fractionOverRegion(
+
+      allValidMask.and(
+        summaryQA.eq(0)
+      )
+
+    );
+
+
+  var summaryMarginalFraction =
+    fractionOverRegion(
+
+      allValidMask.and(
+        summaryQA.eq(1)
+      )
+
+    );
+
+
+  // ===================================================================
+  // 5K. DATA AVAILABILITY FLAGS
+  // ===================================================================
+
+  /*
+   * Explicit numeric 0/1 flags.
+   *
+   * Missing vegetation index != zero vegetation index.
+   */
+
+
+  var standardAvailable =
+    ee.Number(
+      ee.Algorithms.If(
+        standardFraction.gt(0),
+        1,
+        0
+      )
+    );
+
+
+  var strictAvailable =
+    ee.Number(
+      ee.Algorithms.If(
+        strictFraction.gt(0),
+        1,
+        0
+      )
+    );
+
+
+  // ===================================================================
+  // 5L. CREATE ONE CSV ROW
+  // ===================================================================
+
+  return ee.Feature(
+    null,
+    {
+
+      // ---------------------------------------------------------------
+      // Native timing / traceability
+      // ---------------------------------------------------------------
+
+      composite_start_date:
+        compositeDate.format(
+          'YYYY-MM-dd'
+        ),
+
+      native_system_index:
+        nativeIndex,
+
+      nominal_temporal_resolution_days:
+        16,
+
+
+      // ---------------------------------------------------------------
+      // All-valid diagnostic track
+      // ---------------------------------------------------------------
+
+      NDVI_allValid:
+        stats.get(
+          'NDVI_all'
+        ),
+
+      EVI_allValid:
+        stats.get(
+          'EVI_all'
+        ),
+
+      all_valid_fraction:
+        allValidFraction,
+
+
+      // ---------------------------------------------------------------
+      // Standard-QA track
+      // ---------------------------------------------------------------
+
+      NDVI_standardQA:
+        stats.get(
+          'NDVI_standard'
+        ),
+
+      EVI_standardQA:
+        stats.get(
+          'EVI_standard'
+        ),
+
+      standard_QA_fraction:
+        standardFraction,
+
+      standard_QA_data_available_flag:
+        standardAvailable,
+
+
+      // ---------------------------------------------------------------
+      // Strict-QA track
+      // ---------------------------------------------------------------
+
+      NDVI_strictQA:
+        stats.get(
+          'NDVI_strict'
+        ),
+
+      EVI_strictQA:
+        stats.get(
+          'EVI_strict'
+        ),
+
+      strict_QA_fraction:
+        strictFraction,
+
+      strict_QA_data_available_flag:
+        strictAvailable,
+
+
+      // ---------------------------------------------------------------
+      // SummaryQA diagnostics
+      // ---------------------------------------------------------------
+
+      SummaryQA_good_fraction:
+        summaryGoodFraction,
+
+      SummaryQA_marginal_fraction:
+        summaryMarginalFraction
+
+    }
+  );
+
+}
+
+
+// =====================================================================
+// 6. BUILD FINAL FEATURECOLLECTION
+// =====================================================================
+
+var mod13FC =
+  ee.FeatureCollection(
+
+    mod13.map(
+      processMOD13
+    )
+
+  );
+
+
+print('=====================================================');
+print('FINAL MOD13 TABLE');
+print('=====================================================');
+
+
+print(
+  'Final MOD13 row count:',
+  mod13FC.size()
+);
+
+
+print(
+  'First output Feature:',
+  mod13FC.first()
+);
+
+
+// =====================================================================
+// 7. EXPLICIT JULY 2020 VALIDATION
+// =====================================================================
+
+/*
+ * Previous diagnostic image:
+ *
+ * MODIS/061/MOD13Q1/2020_07_11
+ *
+ * We explicitly print values.
+ *
+ * No dropdown arrow required.
+ */
+
+
+var validation =
+  ee.Feature(
+
+    mod13FC
+      .filter(
+        ee.Filter.eq(
+          'composite_start_date',
+          '2020-07-11'
+        )
+      )
+      .first()
+
+  );
+
+
+print('=====================================================');
+print('2020-07-11 EXPLICIT VALIDATION');
+print('=====================================================');
+
+
+print(
+  'VALIDATION composite start:',
+  validation.get(
+    'composite_start_date'
+  )
+);
+
+
+print(
+  'VALIDATION native index:',
+  validation.get(
+    'native_system_index'
+  )
+);
+
+
+// ALL VALID
+
+print(
+  'VALIDATION NDVI all-valid:',
+  validation.get(
+    'NDVI_allValid'
+  )
+);
+
+print(
+  'VALIDATION EVI all-valid:',
+  validation.get(
+    'EVI_allValid'
+  )
+);
+
+print(
+  'VALIDATION all-valid fraction:',
+  validation.get(
+    'all_valid_fraction'
+  )
+);
+
+
+// STANDARD QA
+
+print(
+  'VALIDATION NDVI standard-QA:',
+  validation.get(
+    'NDVI_standardQA'
+  )
+);
+
+print(
+  'VALIDATION EVI standard-QA:',
+  validation.get(
+    'EVI_standardQA'
+  )
+);
+
+print(
+  'VALIDATION standard-QA fraction:',
+  validation.get(
+    'standard_QA_fraction'
+  )
+);
+
+print(
+  'VALIDATION standard-QA availability:',
+  validation.get(
+    'standard_QA_data_available_flag'
+  )
+);
+
+
+// STRICT QA
+
+print(
+  'VALIDATION NDVI strict-QA:',
+  validation.get(
+    'NDVI_strictQA'
+  )
+);
+
+print(
+  'VALIDATION EVI strict-QA:',
+  validation.get(
+    'EVI_strictQA'
+  )
+);
+
+print(
+  'VALIDATION strict-QA fraction:',
+  validation.get(
+    'strict_QA_fraction'
+  )
+);
+
+print(
+  'VALIDATION strict-QA availability:',
+  validation.get(
+    'strict_QA_data_available_flag'
+  )
+);
+
+
+// SUMMARY QA COMPONENTS
+
+print(
+  'VALIDATION SummaryQA good fraction:',
+  validation.get(
+    'SummaryQA_good_fraction'
+  )
+);
+
+print(
+  'VALIDATION SummaryQA marginal fraction:',
+  validation.get(
+    'SummaryQA_marginal_fraction'
+  )
+);
+
+
+// =====================================================================
+// 8. MAP VISUALIZATION
+// =====================================================================
+
+/*
+ * Earlier MODIS sinusoidal visualization produced
+ * a projection-edge error when .clip(studyArea)
+ * was used.
+ *
+ * Therefore visualization is NOT clipped.
+ *
+ * Scientific reduceRegion calculations remain
+ * explicitly restricted to AEZ-26.
+ */
+
+
+var mapImage =
+  ee.Image(
+
+    mod13
+      .filterDate(
+        '2020-07-01',
+        '2020-08-01'
+      )
+      .first()
+
+  )
+    .select(
+      'NDVI'
+    )
+    .multiply(
+      0.0001
+    );
+
+
+Map.addLayer(
+
+  mapImage,
+
+  {
+    min: 0.0,
+    max: 0.8,
+
+    palette: [
+      'brown',
+      'yellow',
+      'lightgreen',
+      'darkgreen'
+    ]
+  },
+
+  'MOD13Q1 NDVI — July 2020',
+
+  false
+
+);
+
+
+// =====================================================================
+// 9. FINAL EXPORT
+// =====================================================================
+
+Export.table.toDrive({
+
+  collection:
+    mod13FC,
+
+  description:
+    'AEZ26_MODIS_NDVI_EVI_QC_2000_2025',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_MODIS_NDVI_EVI_QC_2000_2025',
+
+  fileFormat:
+    'CSV',
+
+  selectors: [
+
+    // Native timing
+    'composite_start_date',
+    'native_system_index',
+    'nominal_temporal_resolution_days',
+
+    // All-valid diagnostic
+    'NDVI_allValid',
+    'EVI_allValid',
+    'all_valid_fraction',
+
+    // Standard QA
+    'NDVI_standardQA',
+    'EVI_standardQA',
+    'standard_QA_fraction',
+    'standard_QA_data_available_flag',
+
+    // Strict QA
+    'NDVI_strictQA',
+    'EVI_strictQA',
+    'strict_QA_fraction',
+    'strict_QA_data_available_flag',
+
+    // QA diagnostic fractions
+    'SummaryQA_good_fraction',
+    'SummaryQA_marginal_fraction'
+
+  ]
+
+});
+
+
+// =====================================================================
+// 10. FINAL MESSAGE
+// =====================================================================
+
+print('=====================================================');
+print('PHASE 1E SCRIPT READY');
+print('=====================================================');
+
+print(
+  'Expected source/output count:',
+  '~595 composites'
+);
+
+print(
+  'Native MOD13Q1 timing has been preserved.'
+);
+
+print(
+  'No daily interpolation has been performed.'
+);
+
+print(
+  'STANDARD QA = SummaryQA 0 or 1.'
+);
+
+print(
+  'STRICT QA = high-confidence DetailedQA sensitivity track.'
+);
+
+print(
+  'Low coverage is retained as QC metadata, not automatically deleted.'
+);
+
+print(
+  'If there is no red error, inspect the explicit 2020-07-11 validation values.'
+);
+
+print(
+  'Then RUN the single MOD13 export task.'
+);
+
+print('=====================================================');

@@ -1,0 +1,9 @@
+# Preprocessing (Google Earth Engine)
+JavaScript for the Earth Engine Code Editor, stored as `.txt`. Before running, create your own AEZ-26 FeatureCollection asset and replace `projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>` in each script. Run order: 1A (CHIRPS), 1B (ERA5-Land), 1C (GLDAS), 1D (MOD16), 1E (MOD13), 1F (GRACE), 1G (JRC), then the geometry audit and the long-record extraction. None of these scripts was executed in the preparation environment.
+
+## Execution status of the Eq. 6/7 scripts (added for this release)
+- `AEZ26_Eq6_Eq7_Source_Export_Script_v01.js` carries the header "NOT YET RUN" from when it was prepared. **Part A (nine layer chunks) was subsequently run by the author** (outputs are in the dataset record under `data/eq6_eq7_verification/eq6/layer_chunks/`). **Part B (45 yearly per-pixel exports) of that script was never run; the per-pixel exports were instead made with `AEZ26_Eq7_FullRecord_SourceExport_v01.js` (below).** The header text was left unchanged to preserve the original file.
+- `AEZ26_Eq7_PartB_PILOT_2000.js` was run by the author for the year 2000 only; its per-pixel output is not included.
+- `AEZ26_Eq7_Temporal_Robustness_DIAGNOSTIC_v02.js` was run by the author; its 23-pentad export is in the dataset record.
+- `AEZ26_Eq7_FullRecord_SourceExport_v01.js` (added in v1.0.1) has three run modes. WEIGHTS, PIXELS (45 yearly exports, in two batches) and DIAG (12-pentad A/B/C comparison) were run by the author on 2026-11-15. The 12-pentad export is in the dataset record; the per-pixel exports and the weights table are withheld and their SHA-256 values are recorded (`data/eq6_eq7_verification/eq7_fullrecord/pixel_export_sha256.csv`). Only the header text was corrected for the release (the original said "PROPOSED - NOT YET RUN"); no code line changed.
+- No Earth Engine script was executed in the QA of this release (syntax check only).

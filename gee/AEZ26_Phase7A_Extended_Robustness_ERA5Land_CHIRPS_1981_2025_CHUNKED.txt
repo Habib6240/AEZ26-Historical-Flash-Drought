@@ -1,0 +1,251 @@
+// ============================================================================
+// AEZ-26 PHASE 7A — EXTENDED HISTORICAL ROBUSTNESS (MEMORY-SAFE CHUNKED)
+// ERA5-Land 0–100 cm soil-water + CHIRPS, 1981–2025
+//
+// SAVE THIS GEE SCRIPT AS:
+// AEZ26_Phase7A_Extended_Robustness_ERA5Land_CHIRPS_1981_2025_CHUNKED
+//
+// WHY CHUNKED?
+// The previous all-45-year server graph exceeded the GEE interactive user-memory
+// limit. This version builds and EXPORTS nine independent 5-year chunks.
+// Do NOT merge the chunks inside GEE. The companion Colab notebook concatenates
+// them after download/Drive export, which is much safer.
+//
+// AUTHORITATIVE AOI
+// projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>
+//
+// DATA
+// ERA5-Land Daily Aggregated: ECMWF/ERA5_LAND/DAILY_AGGR
+// CHIRPS Daily: UCSB-CHG/CHIRPS/DAILY
+//
+// ERA5-Land 0–100 cm equivalent storage [mm]:
+// 70*theta1 + 210*theta2 + 720*theta3
+// (layers 0–7, 7–28, 28–100 cm)
+//
+// IMPORTANT
+// - This is a robustness/sensitivity branch only.
+// - It does NOT replace the locked GLDAS 2000–2025 primary catalogue.
+// - 73-pentad climatological calendar is retained.
+// - In leap years, P12 contains Feb25–Mar1 (6 actual days); P13 onward is
+//   shifted by +1 actual day so post-February climatological pentads do not shift.
+// ============================================================================
+
+var AOI_ASSET = 'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>';
+var ERA5_SCALE = 11132;
+var CHIRPS_SCALE = 5566;
+var DRIVE_FOLDER = 'AEZ26_Final_Research_Data';
+
+var aoiFC = ee.FeatureCollection(AOI_ASSET);
+var aoi = aoiFC.geometry();
+
+Map.centerObject(aoiFC, 8);
+Map.addLayer(
+  aoiFC.style({color: '000000', fillColor: '00000000', width: 2}),
+  {},
+  'AEZ-26 authoritative AOI'
+);
+
+// Source collections are left unexpanded; each pentad filters only its small
+// date window, keeping the server graph substantially smaller than the old code.
+var eraRaw = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR');
+var chirpsRaw = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY');
+
+function isLeapYear(y) {
+  y = ee.Number(y);
+  return y.mod(4).eq(0)
+    .and(y.mod(100).neq(0).or(y.mod(400).eq(0)));
+}
+
+// Return exact start/end dates for a fixed 73-pentad climatological calendar.
+function pentadWindow(y, p) {
+  y = ee.Number(y);
+  p = ee.Number(p);
+
+  var leap = isLeapYear(y);
+  var jan1 = ee.Date.fromYMD(y, 1, 1);
+
+  // P12 gets the leap day; from P13 onward advance one extra actual day.
+  var postFebShift = ee.Number(
+    ee.Algorithms.If(leap.and(p.gte(13)), 1, 0)
+  );
+
+  var startOffset = p.subtract(1).multiply(5).add(postFebShift);
+  var nDays = ee.Number(
+    ee.Algorithms.If(leap.and(p.eq(12)), 6, 5)
+  );
+
+  var start = jan1.advance(startOffset, 'day');
+  var endExclusive = start.advance(nDays, 'day');
+
+  return ee.Dictionary({
+    start: start,
+    endExclusive: endExclusive,
+    nDays: nDays,
+    // Store as numeric 0/1. Earth Engine JavaScript has no ee.Boolean() constructor.
+    leapP12_flag: ee.Number(ee.Algorithms.If(leap.and(p.eq(12)), 1, 0))
+  });
+}
+
+function makePentadFeature(y, p) {
+  y = ee.Number(y);
+  p = ee.Number(p);
+
+  var w = pentadWindow(y, p);
+  var start = ee.Date(w.get('start'));
+  var endExclusive = ee.Date(w.get('endExclusive'));
+  var nDays = ee.Number(w.get('nDays'));
+
+  var e = eraRaw.filterDate(start, endExclusive);
+  var c = chirpsRaw.filterDate(start, endExclusive);
+
+  var eraCount = e.size();
+  var chirpsCount = c.size();
+
+  // Soil-water storage: average daily volumetric water content in each layer,
+  // converted to equivalent storage over 0–100 cm.
+  var sm0100 = e.select('volumetric_soil_water_layer_1').mean().multiply(70)
+    .add(e.select('volumetric_soil_water_layer_2').mean().multiply(210))
+    .add(e.select('volumetric_soil_water_layer_3').mean().multiply(720))
+    .rename('ERA5_SM_0_100_mean_mm');
+
+  var tMean = e.select('temperature_2m').mean().subtract(273.15)
+    .rename('t2m_mean_C');
+
+  var tMax = e.select('temperature_2m_max').max().subtract(273.15)
+    .rename('t2m_max_C');
+
+  // Derive daily RH/VPD first, then aggregate across the pentad.
+  var thermoDaily = e.map(function(img) {
+    var tC = img.select('temperature_2m').subtract(273.15);
+    var tdC = img.select('dewpoint_temperature_2m').subtract(273.15);
+
+    var es = tC.expression(
+      '0.6108 * exp((17.27 * T) / (T + 237.3))',
+      {T: tC}
+    );
+    var ea = tdC.expression(
+      '0.6108 * exp((17.27 * Td) / (Td + 237.3))',
+      {Td: tdC}
+    );
+
+    var rh = ea.divide(es).multiply(100).clamp(0, 100).rename('RH');
+    var vpd = es.subtract(ea).max(ee.Image.constant(0)).rename('VPD');
+
+    return ee.Image.cat([rh, vpd])
+      .copyProperties(img, ['system:time_start']);
+  });
+
+  var rhMean = thermoDaily.select('RH').mean()
+    .rename('relative_humidity_mean_pct');
+  var vpdMean = thermoDaily.select('VPD').mean()
+    .rename('VPD_mean_kPa');
+  var vpdMax = thermoDaily.select('VPD').max()
+    .rename('VPD_dailymean_max_kPa');
+
+  // ECMWF downward-positive convention: evaporation is normally negative.
+  // Convert accumulated m to positive mm evaporative demand using -1000.
+  var peSum = e.select('potential_evaporation_sum').sum()
+    .multiply(-1000)
+    .rename('ERA5_potential_evaporation_sum_mm');
+
+  var eraPentad = ee.Image.cat([
+    sm0100, tMean, tMax, rhMean, vpdMean, vpdMax, peSum
+  ]);
+
+  var eraStats = eraPentad.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: aoi,
+    scale: ERA5_SCALE,
+    maxPixels: 1e8,
+    tileScale: 4
+  });
+
+  var chirpsPentad = c.select('precipitation').sum()
+    .rename('precipitation_sum_mm');
+
+  var chirpsStats = chirpsPentad.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: aoi,
+    scale: CHIRPS_SCALE,
+    maxPixels: 1e8,
+    tileScale: 4
+  });
+
+  var endInclusive = endExclusive.advance(-1, 'day');
+  var midOffset = nDays.subtract(1).divide(2).floor();
+
+  return ee.Feature(null, {
+    year: y,
+    pentad_of_year: p,
+    pentad_label: y.format('%d').cat('_P').cat(p.format('%02d')),
+    pentad_start: start.format('YYYY-MM-dd'),
+    pentad_end: endInclusive.format('YYYY-MM-dd'),
+    pentad_mid_date: start.advance(midOffset, 'day').format('YYYY-MM-dd'),
+    n_days: nDays,
+    era5_daily_images: eraCount,
+    chirps_daily_images: chirpsCount,
+    complete_pentad_flag: ee.Number(ee.Algorithms.If(
+      eraCount.eq(nDays).and(chirpsCount.eq(nDays)), 1, 0
+    )),
+    leap_day_included_flag: ee.Number(w.get('leapP12_flag')),
+
+    ERA5_SM_0_100_mean_mm: eraStats.get('ERA5_SM_0_100_mean_mm'),
+    t2m_mean_C: eraStats.get('t2m_mean_C'),
+    t2m_max_C: eraStats.get('t2m_max_C'),
+    relative_humidity_mean_pct: eraStats.get('relative_humidity_mean_pct'),
+    VPD_mean_kPa: eraStats.get('VPD_mean_kPa'),
+    VPD_dailymean_max_kPa: eraStats.get('VPD_dailymean_max_kPa'),
+    ERA5_potential_evaporation_sum_mm:
+      eraStats.get('ERA5_potential_evaporation_sum_mm'),
+    precipitation_sum_mm: chirpsStats.get('precipitation_sum_mm'),
+
+    aoi_asset: AOI_ASSET,
+    era5_source: 'ECMWF/ERA5_LAND/DAILY_AGGR',
+    chirps_source: 'UCSB-CHG/CHIRPS/DAILY'
+  });
+}
+
+function buildChunk(startYear, endYear) {
+  var features = ee.List.sequence(startYear, endYear).map(function(y) {
+    return ee.List.sequence(1, 73).map(function(p) {
+      return makePentadFeature(y, p);
+    });
+  }).flatten();
+
+  return ee.FeatureCollection(features);
+}
+
+function exportChunk(startYear, endYear) {
+  var fc = buildChunk(startYear, endYear);
+  var tag = startYear + '_' + endYear;
+  var name = 'AEZ26_Phase7A_ERA5Land_CHIRPS_Pentad_' + tag;
+
+  Export.table.toDrive({
+    collection: fc,
+    description: name,
+    folder: DRIVE_FOLDER,
+    fileNamePrefix: name,
+    fileFormat: 'CSV'
+  });
+}
+
+// ---------------------------------------------------------------------------
+// NINE INDEPENDENT EXPORT TASKS — 5 years each = 365 rows per task.
+// This is intentional. Do not replace with one 1981–2025 merged export.
+// ---------------------------------------------------------------------------
+exportChunk(1981, 1985);
+exportChunk(1986, 1990);
+exportChunk(1991, 1995);
+exportChunk(1996, 2000);
+exportChunk(2001, 2005);
+exportChunk(2006, 2010);
+exportChunk(2011, 2015);
+exportChunk(2016, 2020);
+exportChunk(2021, 2025);
+
+// Lightweight diagnostics only; avoid out.size()/out.limit() over 45 years.
+print('Phase 7A memory-safe chunked exporter loaded.');
+print('Expected tasks: 9');
+print('Expected rows per task: 365');
+print('Expected combined rows after Colab merge: 3285');
+print('Run all 9 tasks from the Tasks tab.');

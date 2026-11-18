@@ -1,0 +1,291 @@
+// =====================================================
+// SCRIPT NAME:
+// AEZ26_StudyArea_Geometry_Audit_and_Export
+//
+// IMPORTANT:
+// Before running, manually create this Drive folder
+// INSIDE your desired parent folder:
+//
+// AEZ26_StudyArea_Geometry
+//
+// Google Earth Engine Drive export accepts folder NAME,
+// not Drive folder ID.
+// =====================================================
+
+
+// -----------------------------------------------------
+// 1. Output folder
+// -----------------------------------------------------
+
+var DRIVE_FOLDER = 'AEZ26_StudyArea_Geometry';
+
+
+// -----------------------------------------------------
+// 2. Load exact locked AEZ-26 asset
+// -----------------------------------------------------
+
+var aez26 = ee.FeatureCollection(
+  'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>'
+);
+
+
+// -----------------------------------------------------
+// 3. Display on map
+// -----------------------------------------------------
+
+Map.centerObject(aez26, 9);
+
+Map.addLayer(
+  aez26,
+  {color: 'red'},
+  'AEZ-26 High Barind Tract'
+);
+
+
+// -----------------------------------------------------
+// 4. Basic asset information
+// -----------------------------------------------------
+
+print('FeatureCollection:', aez26);
+print('Feature count:', aez26.size());
+
+var firstFeature = ee.Feature(aez26.first());
+
+print(
+  'First feature properties:',
+  firstFeature.toDictionary()
+);
+
+var geom = aez26.geometry();
+
+print('Geometry type:', geom.type());
+print('Geometry projection:', geom.projection());
+
+
+// -----------------------------------------------------
+// 5. Area
+// -----------------------------------------------------
+
+var area_m2 = geom.area({
+  maxError: 1
+});
+
+var area_km2 = area_m2.divide(1e6);
+
+print('AEZ-26 area (m²):', area_m2);
+print('AEZ-26 area (km²):', area_km2);
+
+
+// -----------------------------------------------------
+// 6. Centroid
+// -----------------------------------------------------
+
+var centroid = geom.centroid({
+  maxError: 1
+});
+
+var centroidCoords = centroid.coordinates();
+
+print('Centroid geometry:', centroid);
+
+print(
+  'Centroid coordinates [longitude, latitude]:',
+  centroidCoords
+);
+
+Map.addLayer(
+  centroid,
+  {color: 'blue'},
+  'AEZ-26 Centroid'
+);
+
+
+// -----------------------------------------------------
+// 7. Bounding box
+// -----------------------------------------------------
+
+var bounds = geom.bounds({
+  maxError: 1
+});
+
+print('Bounding-box geometry:', bounds);
+
+print(
+  'Bounding-box coordinates:',
+  bounds.coordinates()
+);
+
+Map.addLayer(
+  bounds,
+  {color: 'yellow'},
+  'AEZ-26 Bounding Box'
+);
+
+
+// -----------------------------------------------------
+// 8. Minimum / maximum longitude and latitude
+// -----------------------------------------------------
+
+var ring = ee.List(
+  ee.List(bounds.coordinates()).get(0)
+);
+
+var lons = ring.map(function(pt) {
+  return ee.List(pt).get(0);
+});
+
+var lats = ring.map(function(pt) {
+  return ee.List(pt).get(1);
+});
+
+var minLon = ee.Number(
+  lons.reduce(ee.Reducer.min())
+);
+
+var maxLon = ee.Number(
+  lons.reduce(ee.Reducer.max())
+);
+
+var minLat = ee.Number(
+  lats.reduce(ee.Reducer.min())
+);
+
+var maxLat = ee.Number(
+  lats.reduce(ee.Reducer.max())
+);
+
+print('Minimum longitude:', minLon);
+print('Maximum longitude:', maxLon);
+print('Minimum latitude:', minLat);
+print('Maximum latitude:', maxLat);
+
+
+// -----------------------------------------------------
+// 9. Perimeter
+// -----------------------------------------------------
+
+var perimeter_m = geom.perimeter({
+  maxError: 1
+});
+
+var perimeter_km = perimeter_m.divide(1000);
+
+print('Perimeter (m):', perimeter_m);
+print('Perimeter (km):', perimeter_km);
+
+
+// -----------------------------------------------------
+// 10. Export exact boundary as SHP
+// -----------------------------------------------------
+
+Export.table.toDrive({
+  collection: aez26,
+
+  description:
+    'AEZ26_High_Barind_Tract_Boundary_SHP',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_High_Barind_Tract_Boundary',
+
+  fileFormat:
+    'SHP'
+});
+
+
+// -----------------------------------------------------
+// 11. Export exact boundary as GeoJSON
+// -----------------------------------------------------
+
+Export.table.toDrive({
+  collection: aez26,
+
+  description:
+    'AEZ26_High_Barind_Tract_Boundary_GeoJSON',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_High_Barind_Tract_Boundary',
+
+  fileFormat:
+    'GeoJSON'
+});
+
+
+// -----------------------------------------------------
+// 12. Create geometry summary
+// -----------------------------------------------------
+
+var summary = ee.Feature(null, {
+
+  asset_path:
+    'projects/<YOUR-EE-PROJECT>/assets/<YOUR-AEZ26-ASSET>',
+
+  feature_count:
+    aez26.size(),
+
+  geometry_type:
+    geom.type(),
+
+  area_m2:
+    area_m2,
+
+  area_km2:
+    area_km2,
+
+  perimeter_m:
+    perimeter_m,
+
+  perimeter_km:
+    perimeter_km,
+
+  centroid_lon:
+    ee.Number(centroidCoords.get(0)),
+
+  centroid_lat:
+    ee.Number(centroidCoords.get(1)),
+
+  min_lon:
+    minLon,
+
+  max_lon:
+    maxLon,
+
+  min_lat:
+    minLat,
+
+  max_lat:
+    maxLat
+});
+
+
+// -----------------------------------------------------
+// 13. Export summary CSV
+// -----------------------------------------------------
+
+Export.table.toDrive({
+
+  collection:
+    ee.FeatureCollection([summary]),
+
+  description:
+    'AEZ26_Geometry_Summary',
+
+  folder:
+    DRIVE_FOLDER,
+
+  fileNamePrefix:
+    'AEZ26_Geometry_Summary',
+
+  fileFormat:
+    'CSV'
+});
+
+
+// =====================================================
+// END
+// =====================================================
