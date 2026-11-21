@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below. Cite the derived-dataset record separately."
 title: "AEZ-26 High Barind Tract historical flash-drought analysis: code (software release)"
-version: "1.0.1"
+version: "1.0.2"
 type: software
 authors:
   - family-names: "Habib"
@@ -9,7 +9,7 @@ authors:
     orcid: "https://orcid.org/0009-0009-6932-0567"
     affiliation: "Department of Civil Engineering, Bangladesh University of Engineering and Technology (BUET), Dhaka-1000, Bangladesh"
 license: MIT
-abstract: "Google Earth Engine scripts, original Colab notebooks (Phases 2A, 2C-2G and 7A), Python code and documentation supporting the manuscript 'Historical flash drought in the High Barind Tract, Bangladesh: soil-moisture event chronology, source sensitivity and land-water responses, 2000-2025'. Not an end-to-end raw-to-result reproduction; see REPRODUCE.md. Derived data are in a separate record."
+abstract: "Google Earth Engine scripts, original Colab notebooks (Phases 2A, 2C-2G and 7A), Python code and documentation supporting the manuscript 'Source-dependent flash-drought chronology and land–water responses in the High Barind Tract, Bangladesh, 2000–2025'. Not an end-to-end raw-to-result reproduction; see REPRODUCE.md. Derived data are in a separate record."
 keywords:
   - flash drought
   - High Barind Tract
@@ -18,4 +18,4 @@ keywords:
   - event chronology
   - source sensitivity
 doi: 10.5281/zenodo.24213343
-# repository-code: to be added after the GitHub repository is published (none exists)
+repository-code: "https://github.com/Habib6240/AEZ26-Historical-Flash-Drought"

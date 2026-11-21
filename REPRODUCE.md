@@ -18,6 +18,7 @@ Complete end-to-end reproducibility is **not** claimed. This guide states what c
 python -m pip install -r requirements.txt        # Python >= 3.10; QA was run with Python 3.13
 python scripts/stage_flat_inputs.py              # builds data/derived/ (flat view) from the topic folders
 python scripts/detection/independent_detector_and_chronology_audit.py
+python scripts/detection/AEZ26_SI_verify_matching_v04.py          # greedy vs maximum matching: 81 comparisons, exit 1 on any difference
 python scripts/statistics/association_tests_reproduction.py
 python scripts/statistics/consensus_event_analysis.py
 python scripts/statistics/cross_response_exact_permutation.py

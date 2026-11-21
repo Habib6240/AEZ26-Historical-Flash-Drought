@@ -1,0 +1,154 @@
+{
+ "environment": {
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "pandas": "3.0.5",
+  "scipy": "1.18.1",
+  "matplotlib": "3.11.2"
+ },
+ "py_files": 23,
+ "py_syntax_errors": [],
+ "notebooks": [
+  {
+   "file": "notebooks/AEZ26_Phase2A_Daily_Backbone_AUTO_SAVE_Colab.ipynb",
+   "code_cells": 8,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase2E_Native_Response_Alignment_AUTO_SAVE_Colab.ipynb",
+   "code_cells": 15,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase7A_Extended_Robustness_ERA5Land_1981_2025_Analysis_AUTO_SAVE_Colab_FINAL_DOCS_CORRECTED.ipynb",
+   "code_cells": 10,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase2F_FINAL_Naming_QC_Patch_Colab.ipynb",
+   "code_cells": 7,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase2D_Compound_Driver_Characterization_AUTO_SAVE_Colab.ipynb",
+   "code_cells": 17,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase2F_Native_Response_Metrics_Lag_AUTO_SAVE_Colab_v2.ipynb",
+   "code_cells": 19,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase2C_Flash_Drought_Detection_v3_FIRST_CROSSING_FIX_Colab.ipynb",
+   "code_cells": 10,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/AEZ26_Phase2G_Driver_Response_Statistical_Synthesis_AUTO_SAVE_Colab.ipynb",
+   "code_cells": 17,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/superseded/AEZ26_Phase2C_Flash_Drought_Detection_Colab.ipynb",
+   "code_cells": 9,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  },
+  {
+   "file": "notebooks/superseded/AEZ26_Phase7A_Extended_Robustness_ERA5Land_1981_2025_Analysis_AUTO_SAVE_Colab_FINAL_ORIGINAL_UNMODIFIED_APART_FROM_ASSET_PLACEHOLDER.ipynb",
+   "code_cells": 10,
+   "cells_with_stored_outputs": 0,
+   "syntax_errors": []
+  }
+ ],
+ "json_files": 10,
+ "json_invalid": [],
+ "csv_files": 93,
+ "csv_empty_or_invalid": [],
+ "gee_scripts_syntax_only": {
+  "gee/AEZ26_Phase7A_Extended_Robustness_ERA5Land_CHIRPS_1981_2025_CHUNKED.txt": "syntax OK",
+  "gee/AEZ26_Phase1A_CHIRPS_Final.txt": "syntax OK",
+  "gee/AEZ26_Phase1D_MOD16A2GF_Final.txt": "syntax OK",
+  "gee/AEZ26_Phase1E_MOD13Q1_FINAL.txt": "syntax OK",
+  "gee/AEZ26_Phase1C_GLDAS_Final_Chunked.txt": "syntax OK",
+  "gee/AEZ26_Eq7_FullRecord_SourceExport_v01.js": "syntax OK",
+  "gee/AEZ26_Phase1F_GRACE_Mascon_FINAL.txt": "syntax OK",
+  "gee/AEZ26_Phase1G_JRC_SurfaceWater_FINAL.txt": "syntax OK",
+  "gee/AEZ26_StudyArea_Geometry_Audit_and_Export.txt": "syntax OK",
+  "gee/AEZ26_Eq7_Temporal_Robustness_DIAGNOSTIC_v02.js": "syntax OK",
+  "gee/AEZ26_Eq6_Eq7_Source_Export_Script_v01.js": "syntax OK",
+  "gee/AEZ26_Phase1B_ERA5Land_Final_Chunked.txt": "syntax OK",
+  "gee/AEZ26_Eq7_PartB_PILOT_2000.js": "syntax OK"
+ },
+ "duplicate_groups": [],
+ "manifest": {
+  "entries": 117,
+  "mismatches": []
+ },
+ "private_id_or_secret_hits": [],
+ "excluded_analysis_term_hits": [
+  "QA_REPORT.md",
+  "scripts/figures/AEZ26_Fig1_StudyArea_Workflow/make_AEZ26_Fig1_v05.py",
+  "scripts/figures/AEZ26_Fig1_StudyArea_Workflow/README_AEZ26_Fig1.md",
+  "scripts/figures/AEZ26_Fig3_Source_Record_Robustness/README_AEZ26_Fig3.md"
+ ],
+ "script_runs": {
+  "scripts/detection/independent_detector_and_chronology_audit.py": "exit 0",
+  "scripts/statistics/association_tests_reproduction.py": "exit 0",
+  "scripts/statistics/consensus_event_analysis.py": "exit 0",
+  "scripts/statistics/cross_response_exact_permutation.py": "exit 0",
+  "scripts/statistics/seasonal_control_audit.py": "exit 0",
+  "scripts/statistics/response_minimum_window_fraction.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq6_reconstruction_audit.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq6_35pentad_soilwater_offsets.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq7_fullrecord_checks.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq7_pathway_comparison.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq7_percentile_and_drift_tests.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq7_sm_catalogue_stress.py": "exit 0",
+  "scripts/eq6_eq7_audit/eq7_driver_flag_stress.py": "exit 0",
+  "scripts/eq6_eq7_audit/downstream.py": "exit 0"
+ },
+ "output_comparison": {
+  "closure_checks/assoc_reproduction.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/chron_event_diagnosis.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/chron_res.json": "identical",
+  "closure_checks/consensus_associations.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/consensus_comparisons.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/consensus_driver_classes.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/consensus_masks.json": "identical",
+  "closure_checks/cross_exact.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/seasctl_events.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/seasctl_summary.csv": "max numeric difference 0; non-numeric identical True",
+  "closure_checks/seasctl_timing_fraction.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq6/eq6_35pentad_soilwater_offsets.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq6/eq6_pentad_comparison.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq6/eq6_reproduction_summary.json": "identical",
+  "eq6_eq7_verification/eq7/BA_overall.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7/era5_baseline.json": "identical",
+  "eq6_eq7_verification/eq7/era5_catalogue_mc.json": "identical",
+  "eq6_eq7_verification/eq7/flag_margins.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7/flag_montecarlo_measured_sd.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7/pentad_comparison_23.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7/pooled_year_to_year_sd.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7/trend_drift_sensitivity.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7_fullrecord/AEZ26_Eq7_ABC_35pentads_with_offline.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7_fullrecord/AEZ26_Eq7_Recomputed_vs_Stored_3285pentads.csv": "max numeric difference 0; non-numeric identical True",
+  "eq6_eq7_verification/eq7_fullrecord/eq7_fullrecord_checks_part1.json": "identical",
+  "eq6_eq7_verification/eq7_fullrecord/eq7_fullrecord_checks_part2.json": "identical"
+ },
+ "figure_scripts": {
+  "AEZ26_Fig1_StudyArea_Workflow": "NOT RUN (needs the study-area polygon and Bangladesh outline, which are not redistributed)",
+  "AEZ26_Fig2_Catalogue": "exit 0; outputs ['AEZ26_Fig2_Catalogue.png', 'AEZ26_Fig2_Catalogue.svg']",
+  "AEZ26_Fig3_Source_Record_Robustness": "exit 0; outputs ['AEZ26_Fig3_Source_Record_Robustness.png', 'AEZ26_Fig3_Source_Record_Robustness.svg']",
+  "AEZ26_Fig4_LandWater_Response": "exit 0; outputs ['AEZ26_Fig4_LandWater_Response.png', 'AEZ26_Fig4_LandWater_Response.svg']"
+ }
+}

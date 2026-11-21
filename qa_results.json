@@ -6,7 +6,7 @@
   "scipy": "1.18.1",
   "matplotlib": "3.11.2"
  },
- "py_files": 23,
+ "py_files": 24,
  "py_syntax_errors": [],
  "notebooks": [
   {
@@ -72,7 +72,7 @@
  ],
  "json_files": 10,
  "json_invalid": [],
- "csv_files": 93,
+ "csv_files": 92,
  "csv_empty_or_invalid": [],
  "gee_scripts_syntax_only": {
   "gee/AEZ26_Phase7A_Extended_Robustness_ERA5Land_CHIRPS_1981_2025_CHUNKED.txt": "syntax OK",
@@ -91,12 +91,12 @@
  },
  "duplicate_groups": [],
  "manifest": {
-  "entries": 117,
+  "entries": 94,
   "mismatches": []
  },
  "private_id_or_secret_hits": [],
  "excluded_analysis_term_hits": [
-  "QA_REPORT.md",
+  "documentation/QA_REPORT_v1.0.1.md",
   "scripts/figures/AEZ26_Fig1_StudyArea_Workflow/make_AEZ26_Fig1_v05.py",
   "scripts/figures/AEZ26_Fig1_StudyArea_Workflow/README_AEZ26_Fig1.md",
   "scripts/figures/AEZ26_Fig3_Source_Record_Robustness/README_AEZ26_Fig3.md"
